@@ -1,5 +1,13 @@
 # AI API Testing Agent
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#已知限制与路线图)
+[![Vue 3](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-6-3178c6.svg)](https://www.typescriptlang.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688.svg)](https://fastapi.tiangolo.com/)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776ab.svg)](https://www.python.org/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169e1.svg)](https://www.postgresql.org/)
+
 **面向 API 开发与测试的 AI 辅助测试平台。** 支持手动发送 API 请求、解析 OpenAPI 文档、生成与审核测试计划，并通过后端执行引擎运行测试、查看断言结果与实时事件。
 
 > **项目状态：Early Development / Alpha。** 当前已具备真实的 Guest Session、Project 管理、安全 HTTP 代理、Agent 分析与测试计划、Run 执行和 SSE 事件流等基础能力，但仍有重要限制：完整 AI 测试链路尚未通过真实浏览器端到端验收，Run 启动恢复机制尚未实现，PDF 导出尚未实现。请勿将当前版本用于关键生产测试。
@@ -18,6 +26,7 @@
 - [开发原则](#开发原则)
 - [许可证](#许可证)
 - [English Summary](#english-summary)
+- [License](#license)
 
 ## 项目目标
 
@@ -214,7 +223,28 @@ npm run verify  # vue-tsc 类型检查 + Vitest
 
 ## 许可证
 
-当前仓库尚未指定许可证。若计划作为开源项目公开发布，请在仓库中添加明确的 `LICENSE` 文件，并确认其中的授权条款符合你的预期。
+本项目以 **MIT License** 开源发布，版权归 **PZTandKOBE** 所有。
+
+```text
+Copyright (c) 2026 PZTandKOBE
+```
+
+MIT 是宽松许可证：你可以自由使用、修改、分发本项目，包括用于商业用途，
+条件是**保留版权声明与许可证全文**。完整条款见仓库根目录的 [`LICENSE`](LICENSE)。
+
+```text
+在满足上述条件的前提下，你可以：
+  ✅ 商业使用      ✅ 修改源码      ✅ 分发          ✅ 私人使用
+
+你必须：
+  📌 保留版权声明与许可证副本（在副本或实质性部分中）
+
+作者不承担：
+  ⚠️ 任何形式的担保责任（软件按「原样」提供）
+```
+
+> 本项目依赖的第三方库（Vue、FastAPI、Element Plus 等）各自遵循其自身许可证，
+> 不受本项目 MIT 许可证影响。若你计划再分发，请一并遵守那些许可证的要求。
 
 ---
 
@@ -223,3 +253,7 @@ npm run verify  # vue-tsc 类型检查 + Vitest
 **AI API Testing Agent** is an early-stage AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, and PostgreSQL. It provides a manual API client, a secured backend proxy, an OpenAPI-to-test-plan workflow, deterministic test execution, assertions, persisted run events, and SSE updates.
 
 The project is **not production-ready yet**. Startup recovery for in-flight runs is not implemented; the complete AI workflow has not been verified end to end in a real browser; PDF export, YAML OpenAPI parsing, server-side Collections/History persistence, and real user authentication are not implemented. See the sections above for setup instructions, verification status, and current limitations.
+
+## License
+
+Released under the **MIT License**. Copyright (c) 2026 PZTandKOBE. See [`LICENSE`](LICENSE) for the full text — you may use, modify and redistribute this project, including commercially, provided the copyright notice and licence text are retained.
