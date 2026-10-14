@@ -1,0 +1,513 @@
+/**
+ * Console surface — application chrome for `/console/**`.
+ *
+ * Two jobs:
+ *  1. Re-point Element Plus at the product palette (near-black + deep purple)
+ *     so EP components stop rendering like a stock admin template.
+ *  2. Provide the few primitives Tailwind expresses poorly: the fixed
+ *     application shell, navigation item states, and console scrollbars.
+ *
+ * Deliberately *not* here: the landing page's veil, glow and grain. The console
+ * is a tool — density over spectacle.
+ *
+ * Scope note: Element Plus teleports its poppers (dropdowns, dialogs, drawers)
+ * to <body>, so anything they need has to be global. The tokens therefore live
+ * on `:root` and the EP overrides on `html.dark`. The landing page renders no
+ * EP components at all, so none of this can reach it.
+ */
+
+/* ------------------------------------------------------------------ *
+ * Tokens
+ * ------------------------------------------------------------------ */
+
+:root {
+  /* Surfaces: one step lighter than the marketing page so panels read as
+     raised against the shell without needing heavy shadows. */
+  --console-bg: #05040a;
+  --console-surface: #0a0714;
+  --console-surface-raised: #100c1d;
+  --console-surface-hover: rgba(167, 139, 250, 0.07);
+
+  /* Borders are purple-tinted greys rather than neutral ones — at 1px on a
+     near-black field a neutral grey reads as dirty, not as structure. */
+  --console-border: rgba(148, 130, 190, 0.16);
+  --console-border-strong: rgba(167, 139, 250, 0.34);
+
+  --console-text: #f8fafc;
+  --console-text-dim: rgba(226, 232, 240, 0.62);
+  --console-text-muted: rgba(203, 213, 225, 0.4);
+
+  /* Shell geometry. Kept as tokens because the top bar, the sidebar and
+     every sticky page header have to agree on them. */
+  --console-topbar-h: 52px;
+  --console-sidebar-w: 220px;
+  --console-sidebar-w-collapsed: 58px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Element Plus theme
+ *
+ * Element Plus derives every hover, disabled and subtle-background shade from
+ * the `-light-N` ramp, so the ramp is mixed from the accent rather than
+ * hand-picked: one accent change re-tints the whole component set.
+ * ------------------------------------------------------------------ */
+
+html.dark {
+  --el-color-primary: #8b5cf6;
+  --el-color-primary-light-3: color-mix(in srgb, var(--el-color-primary) 72%, var(--el-bg-color));
+  --el-color-primary-light-5: color-mix(in srgb, var(--el-color-primary) 52%, var(--el-bg-color));
+  --el-color-primary-light-7: color-mix(in srgb, var(--el-color-primary) 30%, var(--el-bg-color));
+  --el-color-primary-light-8: color-mix(in srgb, var(--el-color-primary) 20%, var(--el-bg-color));
+  --el-color-primary-light-9: color-mix(in srgb, var(--el-color-primary) 12%, var(--el-bg-color));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--el-color-primary) 82%, #ffffff);
+
+  /* Status colours are pinned to the marketing page's `--status-*` tokens so a
+     green tag in the console is the same green as a passing step on the home
+     page. */
+  --el-color-success: #4ade80;
+  --el-color-success-light-3: color-mix(in srgb, var(--el-color-success) 72%, var(--el-bg-color));
+  --el-color-success-light-5: color-mix(in srgb, var(--el-color-success) 52%, var(--el-bg-color));
+  --el-color-success-light-7: color-mix(in srgb, var(--el-color-success) 30%, var(--el-bg-color));
+  --el-color-success-light-8: color-mix(in srgb, var(--el-color-success) 20%, var(--el-bg-color));
+  --el-color-success-light-9: color-mix(in srgb, var(--el-color-success) 12%, var(--el-bg-color));
+  --el-color-success-dark-2: color-mix(in srgb, var(--el-color-success) 82%, #ffffff);
+
+  --el-color-warning: #fbbf24;
+  --el-color-warning-light-3: color-mix(in srgb, var(--el-color-warning) 72%, var(--el-bg-color));
+  --el-color-warning-light-5: color-mix(in srgb, var(--el-color-warning) 52%, var(--el-bg-color));
+  --el-color-warning-light-7: color-mix(in srgb, var(--el-color-warning) 30%, var(--el-bg-color));
+  --el-color-warning-light-8: color-mix(in srgb, var(--el-color-warning) 20%, var(--el-bg-color));
+  --el-color-warning-light-9: color-mix(in srgb, var(--el-color-warning) 12%, var(--el-bg-color));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--el-color-warning) 82%, #ffffff);
+
+  --el-color-danger: #fb7185;
+  --el-color-danger-light-3: color-mix(in srgb, var(--el-color-danger) 72%, var(--el-bg-color));
+  --el-color-danger-light-5: color-mix(in srgb, var(--el-color-danger) 52%, var(--el-bg-color));
+  --el-color-danger-light-7: color-mix(in srgb, var(--el-color-danger) 30%, var(--el-bg-color));
+  --el-color-danger-light-8: color-mix(in srgb, var(--el-color-danger) 20%, var(--el-bg-color));
+  --el-color-danger-light-9: color-mix(in srgb, var(--el-color-danger) 12%, var(--el-bg-color));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--el-color-danger) 82%, #ffffff);
+
+  /* `error` is a separate EP alias; it shares the danger values. */
+  --el-color-error: var(--el-color-danger);
+  --el-color-error-light-3: var(--el-color-danger-light-3);
+  --el-color-error-light-5: var(--el-color-danger-light-5);
+  --el-color-error-light-7: var(--el-color-danger-light-7);
+  --el-color-error-light-8: var(--el-color-danger-light-8);
+  --el-color-error-light-9: var(--el-color-danger-light-9);
+  --el-color-error-dark-2: var(--el-color-danger-dark-2);
+
+  /* `info` stays neutral: EP uses it for untyped tags and secondary buttons,
+     where a purple would collide with the primary action. */
+  --el-color-info: #8b8fa8;
+  --el-color-info-light-3: color-mix(in srgb, var(--el-color-info) 72%, var(--el-bg-color));
+  --el-color-info-light-5: color-mix(in srgb, var(--el-color-info) 52%, var(--el-bg-color));
+  --el-color-info-light-7: color-mix(in srgb, var(--el-color-info) 30%, var(--el-bg-color));
+  --el-color-info-light-8: color-mix(in srgb, var(--el-color-info) 20%, var(--el-bg-color));
+  --el-color-info-light-9: color-mix(in srgb, var(--el-color-info) 12%, var(--el-bg-color));
+  --el-color-info-dark-2: color-mix(in srgb, var(--el-color-info) 82%, #ffffff);
+
+  /* --- Surfaces --- */
+  --el-bg-color-page: var(--console-bg);
+  --el-bg-color: var(--console-surface);
+  --el-bg-color-overlay: var(--console-surface-raised);
+
+  /* --- Text --- */
+  --el-text-color-primary: var(--console-text);
+  --el-text-color-regular: #c2c4d4;
+  --el-text-color-secondary: #9698ad;
+  --el-text-color-placeholder: #6a6c82;
+  --el-text-color-disabled: #4d4f61;
+
+  /* --- Borders --- */
+  --el-border-color-darker: #3a3352;
+  --el-border-color-dark: #332c49;
+  --el-border-color: #2a2440;
+  --el-border-color-light: #241f38;
+  --el-border-color-lighter: #1e1a30;
+  --el-border-color-extra-light: #191527;
+
+  /* --- Fills --- */
+  --el-fill-color-darker: #262039;
+  --el-fill-color-dark: #211c33;
+  --el-fill-color: #1b1729;
+  --el-fill-color-light: #15121f;
+  --el-fill-color-lighter: #110e1a;
+  --el-fill-color-extra-light: #0d0b15;
+  --el-fill-color-blank: var(--console-surface);
+
+  --el-mask-color: rgba(5, 4, 10, 0.72);
+  --el-mask-color-extra-light: rgba(5, 4, 10, 0.3);
+
+  /* --- Tables ---
+     Tables sit inside panels that already supply the surface, so their own
+     background is cleared rather than stacked a shade lighter. */
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: transparent;
+  --el-table-border-color: var(--console-border);
+  --el-table-border: 1px solid var(--console-border);
+  --el-table-header-text-color: var(--console-text-muted);
+  --el-table-text-color: var(--console-text-dim);
+  --el-table-row-hover-bg-color: var(--console-surface-hover);
+
+  /* --- Shape and type --- */
+  --el-font-family: var(--font-sans);
+  --el-font-size-base: 13px;
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 4px;
+
+  /* Poppers float over a dark tool; tinting the shadow purple keeps them from
+     reading as a grey smear. */
+  --el-box-shadow-light: 0 8px 26px -8px rgba(0, 0, 0, 0.85);
+  --el-box-shadow: 0 12px 34px -10px rgba(0, 0, 0, 0.9);
+  --el-box-shadow-dark: 0 18px 48px -12px rgba(0, 0, 0, 0.95);
+}
+
+/* Element Plus ships an opaque white tooltip background; on this surface a
+   dark bubble with a hairline is both calmer and more legible. */
+html.dark .el-popper.is-dark {
+  background: var(--console-surface-raised);
+  border: 1px solid var(--console-border);
+  color: var(--console-text);
+}
+
+html.dark .el-popper.is-dark .el-popper__arrow::before {
+  background: var(--console-surface-raised);
+  border: 1px solid var(--console-border);
+}
+
+/* ------------------------------------------------------------------ *
+ * Application shell
+ *
+ * The shell owns the viewport and never scrolls; each pane scrolls itself.
+ * That is what lets the API Client keep a fixed request bar above an
+ * independently scrolling response body.
+ * ------------------------------------------------------------------ */
+
+.console-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+  background-color: var(--console-bg);
+  color: var(--console-text);
+}
+
+.console-scroll {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, 0.26) transparent;
+}
+
+.console-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.console-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.console-scroll::-webkit-scrollbar-thumb {
+  background-color: rgba(167, 139, 250, 0.22);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+.console-scroll::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(167, 139, 250, 0.42);
+  background-clip: content-box;
+}
+
+.console-scroll::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* ------------------------------------------------------------------ *
+ * Navigation
+ *
+ * One class shared by the persistent rail, its footer and the mobile drawer,
+ * so an active item looks identical everywhere it appears.
+ * ------------------------------------------------------------------ */
+
+.console-nav-link {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding-inline: 10px;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--console-text-dim);
+  text-decoration: none;
+  white-space: nowrap;
+  transition:
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+.console-nav-link:hover {
+  background-color: var(--console-surface-hover);
+  color: var(--console-text);
+}
+
+.console-nav-link.is-active {
+  background-color: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-soft);
+}
+
+/* Left indicator: a short bar rather than a full-height edge, so a column of
+   items does not read as a stack of boxes. */
+.console-nav-link.is-active::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 0;
+  top: 50%;
+  width: 2px;
+  height: 16px;
+  border-radius: 2px;
+  background-color: var(--accent);
+  transform: translateY(-50%);
+}
+
+.console-nav-link.is-disabled {
+  color: var(--console-text-muted);
+  cursor: not-allowed;
+}
+
+.console-nav-link.is-disabled:hover {
+  background-color: transparent;
+  color: var(--console-text-muted);
+}
+
+/* An entry that carries a hint is allowed to be taller than the rest: the
+   second line is the point of it, and clipping it would leave the two entries
+   it distinguishes looking like all the others again. */
+.console-nav-link.has-hint {
+  height: auto;
+  min-height: 34px;
+  padding-block: 5px;
+}
+
+/* Collapsed rail: icons only, centred. The label is still in the DOM for
+   assistive tech and surfaces as a tooltip on hover. The hint goes with it —
+   it is clipped through its wrapper, so a hinted entry collapses to exactly
+   the same icon-only row as every other. */
+.console-nav-link.is-collapsed {
+  justify-content: center;
+  padding-inline: 0;
+  gap: 0;
+}
+
+.console-nav-link.is-collapsed .console-nav-link__text,
+.console-nav-link.is-collapsed .console-nav-link__label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------------ *
+ * Surfaces
+ * ------------------------------------------------------------------ */
+
+.console-panel {
+  background-color: var(--console-surface);
+  border: 1px solid var(--console-border);
+  border-radius: 10px;
+}
+
+.console-panel--raised {
+  background-color: var(--console-surface-raised);
+}
+
+.console-hairline {
+  height: 1px;
+  background-color: var(--console-border);
+}
+
+/* Standard page body. Views that need the full pane — the API Client does —
+   simply do not use it. */
+.console-page {
+  padding: 20px 24px 48px;
+}
+
+/* Uppercase micro-label used for section eyebrows and column headers. */
+.console-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--console-text-muted);
+}
+
+/* Faint purple lattice. Enough texture to keep large empty states from
+   looking like a rendering failure, far too quiet to compete with content. */
+.console-grid-bg {
+  background-image:
+    linear-gradient(rgba(167, 139, 250, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(167, 139, 250, 0.045) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+/* ------------------------------------------------------------------ *
+ * Element Plus component adjustments
+ *
+ * Only what the theme variables cannot express.
+ * ------------------------------------------------------------------ */
+
+.console-drawer .el-drawer__body {
+  padding: 0;
+}
+
+.console-drawer {
+  background-color: var(--console-surface);
+}
+
+/* Poppers default to an 8px radius with a lighter fill; the console's surfaces
+   are flatter than Element Plus's stock look. */
+.console-notification-popper.el-popover.el-popper {
+  padding: 12px 14px;
+}
+
+/* Dialogs sit above the console rather than inside it, so they take the raised
+   surface and a hairline — the same treatment as every other floating layer. */
+.console-dialog.el-dialog {
+  --el-dialog-bg-color: var(--console-surface-raised);
+  border: 1px solid var(--console-border);
+  border-radius: 12px;
+}
+
+.console-dialog .el-dialog__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--console-text);
+}
+
+/* ------------------------------------------------------------------ *
+ * API Client
+ * ------------------------------------------------------------------ */
+
+/*
+ * Key/value rows are a dense table, so their inputs are flush rather than
+ * boxed: a grid of bordered fields reads as a form to fill in, which is the
+ * wrong affordance for something the user edits line by line. The border
+ * appears on hover and focus, where it marks the active cell.
+ */
+.console-kv-input .el-input__wrapper {
+  background-color: transparent;
+  box-shadow: none;
+  border-radius: 5px;
+  padding: 0 8px;
+}
+
+.console-kv-input .el-input__wrapper:hover {
+  background-color: rgba(255, 255, 255, 0.035);
+}
+
+.console-kv-input .el-input__wrapper.is-focus {
+  background-color: rgba(255, 255, 255, 0.05);
+  box-shadow: inset 0 0 0 1px var(--console-border-strong);
+}
+
+/* Element Plus sizes the input box itself; only the type is overridden, so the
+   row height stays tied to the component's own size scale. */
+.console-kv-input .el-input__inner {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  height: 28px;
+}
+
+/* Body and URL editors are code surfaces: monospace, roomy, and allowed to
+   scroll rather than grow the pane. */
+.console-code-input .el-textarea__inner {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.6;
+  background-color: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 0 0 0 1px var(--console-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  resize: vertical;
+}
+
+.console-code-input .el-textarea__inner:focus {
+  box-shadow: inset 0 0 0 1px var(--console-border-strong);
+}
+
+.console-code-input .el-input__wrapper {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  background-color: rgba(0, 0, 0, 0.28);
+  box-shadow: inset 0 0 0 1px var(--console-border);
+  border-radius: 8px;
+}
+
+.console-code-input .el-input__wrapper.is-focus {
+  box-shadow: inset 0 0 0 1px var(--console-border-strong);
+}
+
+/*
+ * Body editor variant: the textarea fills the tab pane instead of the pane
+ * being sized around it.
+ *
+ * Element Plus derives a textarea's height from its `rows` attribute, which
+ * cannot know how tall the pane is — that is the user's own splitter position.
+ * The wrapper becomes the flex column that hands the textarea whatever height
+ * is left, and the textarea's own `overflow-y` takes over from there, so a
+ * long body scrolls inside the bounded code surface the way a code editor
+ * should. Its resize handle is off: the layout already gives it every pixel
+ * the pane has, so a manual height could only be ignored or overflow.
+ */
+.console-code-input--fill.el-textarea {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.console-code-input--fill.el-textarea .el-textarea__inner {
+  flex: 1 1 0;
+  resize: none;
+}
+
+/* JSON viewer palette. Shared by the tree and raw modes so the two views of
+   the same payload are recognisably the same data. */
+.json-key {
+  color: var(--accent-soft);
+}
+
+.json-string {
+  color: var(--status-pass);
+}
+
+.json-number {
+  color: var(--status-warn);
+}
+
+.json-boolean {
+  color: var(--accent);
+}
+
+.json-null {
+  color: var(--console-text-muted);
+}
+
+.json-punctuation {
+  color: var(--console-text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .console-nav-link {
+    transition: none;
+  }
+}

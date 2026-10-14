@@ -1,0 +1,60 @@
+/**
+ * Design tokens for the marketing surface.
+ *
+ * The landing page is a dark-only, near-black + deep-purple surface. These
+ * tokens exist so the palette stays in one place instead of being sprinkled
+ * across components as ad-hoc hex values.
+ */
+
+:root {
+  /* --- Base surfaces: near-black, never pure #000 at the page level --- */
+  --bg-base: #05040a;
+  --bg-deep: #0a0714;
+  --bg-raised: #0d0a18;
+
+  /* --- Deep purple field (sits above the WebGL veil) --- */
+  --purple-deep: #2a1060;
+  --purple-core: #4c1d95;
+  --purple-mid: #6d28d9;
+
+  /* --- Purple accent used for glow, strokes and highlights --- */
+  --accent: #a78bfa;
+  --accent-strong: #8b5cf6;
+  --accent-soft: #c4b5fd;
+
+  /* --- Text --- */
+  --text-primary: #f8fafc;
+  --text-secondary: rgba(226, 232, 240, 0.66);
+  --text-muted: rgba(203, 213, 225, 0.42);
+
+  /* --- Glass surfaces (cards, mockups, navbar) --- */
+  --glass-bg: rgba(255, 255, 255, 0.022);
+  --glass-bg-strong: rgba(255, 255, 255, 0.045);
+  --glass-border: rgba(255, 255, 255, 0.08);
+  --glass-border-strong: rgba(167, 139, 250, 0.26);
+  --glass-shadow: 0 24px 70px -30px rgba(0, 0, 0, 0.95);
+
+  /* --- Status colors used by the product mockups --- */
+  --status-pass: #4ade80;
+  --status-warn: #fbbf24;
+  --status-fail: #fb7185;
+  --status-info: #a78bfa;
+
+  /* --- Typography --- */
+  --font-sans: 'Inter', 'Inter var', system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas,
+    'Liberation Mono', monospace;
+
+  /* --- Layout --- */
+  --shell-max: 1360px;
+  --shell-pad: 24px;
+
+}
+
+@media (min-width: 1024px) {
+  :root {
+    --shell-pad: 40px;
+  }
+}

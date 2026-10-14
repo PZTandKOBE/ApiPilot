@@ -1,0 +1,12 @@
+Vue Bits Effects Package
+========================
+
+Components:
+- StrokeText.vue — gsap
+- DarkVeil.vue — ogl
+- CardSwap.vue — gsap
+- SpecularButton.vue — ogl
+
+Source basis:
+- StrokeText, DarkVeil, SpecularButton: user-provided official Vue Bits integration source.
+- CardSwap: official Vue Bits repository source.

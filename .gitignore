@@ -1,0 +1,55 @@
+# --------------------------------------------------------------------------- #
+# Secrets
+# --------------------------------------------------------------------------- #
+# The backend reads its database credentials and DEEPSEEK_API_KEY from here.
+# Never commit it: backend/.gitignore has the same rule, this is the belt to
+# that pair of braces.
+.env
+.env.*
+!.env.example
+*.local
+
+# --------------------------------------------------------------------------- #
+# Node / package manager caches
+# --------------------------------------------------------------------------- #
+# A local npm cache lives in the repository root (about 100 MB of tarballs and
+# debug logs). It is an artifact of the machine, not of the project.
+.npm-cache/
+.pnpm-store/
+.yarn/cache/
+node_modules/
+dist/
+dist-ssr/
+coverage/
+*.tsbuildinfo
+
+# --------------------------------------------------------------------------- #
+# Python
+# --------------------------------------------------------------------------- #
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --------------------------------------------------------------------------- #
+# Editors and operating systems
+# --------------------------------------------------------------------------- #
+.idea/
+.vscode/*
+!.vscode/extensions.json
+.DS_Store
+Thumbs.db
+*.suo
+*.sw?
+
+# --------------------------------------------------------------------------- #
+# Logs and scratch output
+# --------------------------------------------------------------------------- #
+*.log
+logs/
+*.tmp
+*.bak

@@ -1,0 +1,29 @@
+[project]
+name = "backend"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "PZT", email = "3478636187@qq.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "asyncpg>=0.31.0",
+    "fastapi[standard]>=0.141.1",
+    "greenlet>=3.0",
+    "httpx>=0.28.1",
+    "python-dotenv>=1.2.3",
+    "sqlalchemy>=2.0.54",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+backend = "backend:main"
+
+[[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
+
+[build-system]
+requires = ["uv_build>=0.12.9,<0.13.0"]
+build-backend = "uv_build"

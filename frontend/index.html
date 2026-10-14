@@ -1,0 +1,18 @@
+<!doctype html>
+<!--
+  `dark` is on <html> from the first byte rather than toggled at runtime:
+  Element Plus scopes its dark variables to `html.dark`, so without it the
+  console would paint one light-themed frame before the app mounts.
+-->
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/topic.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI API Testing Agent</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

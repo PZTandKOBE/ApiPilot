@@ -1,0 +1,327 @@
+/**
+ * Landing-page composition styles.
+ *
+ * Layout itself lives in Tailwind utilities inside the components. Everything
+ * here is something Tailwind is a poor fit for: the fixed background stack,
+ * layered purple glows, glass surfaces, and the CardSwap stage geometry.
+ */
+
+/* ------------------------------------------------------------------ *
+ * Background stack
+ * ------------------------------------------------------------------ */
+
+.veil-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background-color: var(--bg-base);
+}
+
+/* Pushes the WebGL field toward deep black/purple and away from the
+   washed-out values the raw shader produces in its brighter regions. */
+.veil-backdrop::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      120% 90% at 50% -10%,
+      color-mix(in srgb, var(--purple-core) 42%, transparent) 0%,
+      transparent 62%
+    ),
+    radial-gradient(
+      80% 60% at 88% 8%,
+      color-mix(in srgb, var(--purple-mid) 26%, transparent) 0%,
+      transparent 60%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(5, 4, 10, 0.7) 0%,
+      rgba(5, 4, 10, 0.42) 38%,
+      rgba(5, 4, 10, 0.86) 100%
+    );
+  mix-blend-mode: multiply;
+  pointer-events: none;
+}
+
+/* Separate layer so the *screen* glow does not get swallowed by the
+   multiply pass above. */
+.veil-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(
+      52% 42% at 16% 30%,
+      color-mix(in srgb, var(--accent) 13%, transparent) 0%,
+      transparent 100%
+    ),
+    radial-gradient(
+      44% 38% at 82% 62%,
+      color-mix(in srgb, var(--accent-strong) 12%, transparent) 0%,
+      transparent 100%
+    );
+}
+
+/* Fine grain so large flat areas do not band on wide gamut displays. */
+.veil-grain {
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.4;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)' opacity='0.32'/%3E%3C/svg%3E");
+}
+
+/* ------------------------------------------------------------------ *
+ * Surfaces
+ * ------------------------------------------------------------------ */
+
+.glass-panel {
+  background:
+    linear-gradient(
+      180deg,
+      var(--glass-bg-strong) 0%,
+      var(--glass-bg) 100%
+    );
+  border: 1px solid var(--glass-border);
+  backdrop-filter: blur(14px) saturate(120%);
+  -webkit-backdrop-filter: blur(14px) saturate(120%);
+  box-shadow: var(--glass-shadow);
+}
+
+/* Hairline top highlight — reads as a light source above the card. */
+.glass-sheen {
+  position: relative;
+}
+
+.glass-sheen::before {
+  content: '';
+  position: absolute;
+  inset-inline: 14%;
+  top: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--accent-soft) 62%, transparent),
+    transparent
+  );
+  pointer-events: none;
+}
+
+.text-gradient-fade {
+  background: linear-gradient(
+    180deg,
+    var(--text-primary) 8%,
+    rgba(226, 232, 240, 0.62) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ------------------------------------------------------------------ *
+ * Hero
+ * ------------------------------------------------------------------ */
+
+.hero-stage {
+  position: relative;
+  z-index: 10;
+  min-height: 100svh;
+}
+
+/* StrokeText draws into an SVG sized from its own `font-size`, so both the
+   glyph geometry and the box height follow that one value.
+ *
+ * One number carries the whole display scale, defined *here* rather than on
+ * each line: an `em` written on the line would resolve against the line's own
+ * font-size — the very value being computed. Defining it on the wrapper also
+ * makes the type scale with the viewport and with the user's font-size
+ * preference, which a pixel value could not do.
+ *
+ * The secondary line renders at ~14.9 x --hero-title-em (measured: a 13
+ * character run of a weight-800 system stack). Keeping it just inside the
+ * copy column means holding it near 0.066 x column width — and the column is
+ * a different fraction of the viewport either side of each breakpoint, so the
+ * coefficient changes there rather than being one fluid term. */
+.hero-title {
+  --hero-title-em: min(4.2rem, 13.4vw);
+
+  line-height: 0;
+  --hero-title-gap: calc(var(--hero-title-em) * 0.16);
+}
+
+.hero-title__line {
+  display: block;
+}
+
+.hero-title__line--primary {
+  --hero-title-line-size: calc(var(--hero-title-em) * 2.4); /* em */
+  --hero-title-line-height: calc(var(--hero-title-line-size) * 1.16);
+}
+
+.hero-title__line--secondary {
+  --hero-title-line-size: calc(var(--hero-title-em) * 2); /* em */
+  --hero-title-line-height: calc(var(--hero-title-line-size) * 1.16);
+
+  width: 100%;
+  margin-top: var(--hero-title-gap);
+}
+
+/* Single column above the split breakpoint; the hero copy owns the full shell. */
+@media (min-width: 768px) {
+  .hero-title {
+    --hero-title-em: min(4.6rem, 7.4vw);
+  }
+}
+
+/* Split layout: the copy column is a little over half the shell. */
+@media (min-width: 1024px) {
+  .hero-title {
+    --hero-title-em: min(4.7rem, 3.57vw);
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * CardSwap stage
+ *
+ * CardSwap positions itself absolutely at the bottom-right of its parent
+ * and applies its own 480px/768px scale factors. These rules only place
+ * that stage and reserve the space it occupies, so the cards never
+ * collide with the hero copy or push the document sideways.
+ * ------------------------------------------------------------------ */
+
+/* CardSwap anchors to the bottom-right of its parent and pushes its own
+ * translate outward, so the stack hangs off the right edge of the column by
+ * a fixed ~180px (measured; the cards are 3D-projected, so the overhang does
+ * not follow from the stage box). The stage is therefore scaled down and
+ * pulled back rather than re-anchored, which keeps the component untouched.
+ *
+ * The pull values are the measured overhang plus ~45px of breathing room,
+ * floored so the card never crosses into the hero copy column. */
+.showcase-stage {
+  position: relative;
+  width: 100%;
+  pointer-events: none;
+  transform-origin: bottom right;
+  --showcase-scale: 1;
+  --showcase-pull: -45px;
+
+  /* Distance from this box's top to the bottom of the card stack.
+     CardSwap writes the card dimensions inline and offsets its container with
+     percentages of its own height, so this cannot be derived from the card
+     size — it is measured at each breakpoint and pinned here. Values include
+     a small safety margin so the cards never bleed into the next section. */
+  --showcase-height: 700px;
+
+  height: var(--showcase-height);
+
+  /* CardSwap offsets its stack downward by a fixed amount that is *not* a
+     function of this box, so the cards render past the bottom edge. The
+     negative margin stops the reserve from turning into dead space; the
+     translate lifts the whole stack toward the copy.
+
+     This is the single knob for the stack's vertical position. */
+  --showcase-lift: -250px;
+
+  margin-bottom: -250px;
+  transform: translate(var(--showcase-pull), var(--showcase-lift))
+    scale(var(--showcase-scale));
+}
+
+/* Ordered widest-first so each block refines the one above it. */
+@media (max-width: 1360px) {
+  .showcase-stage {
+    --showcase-height: 552px;
+    --showcase-scale: 0.88;
+    --showcase-pull: -75px;
+    --showcase-lift: -220px;
+  }
+}
+
+@media (max-width: 1180px) {
+  .showcase-stage {
+    --showcase-height: 504px;
+    --showcase-scale: 0.76;
+    --showcase-pull: -85px;
+    --showcase-lift: -200px;
+  }
+}
+
+@media (max-width: 1023px) {
+  .showcase-stage {
+    --showcase-height: 472px;
+    --showcase-lift: -250px;
+    /* At this width CardSwap's own scale/translate lands the stack above the
+       stage top, so the gap here is larger to keep it clear of the copy. */
+    margin-top: 48px;
+  }
+}
+
+@media (max-width: 767px) {
+  .showcase-stage {
+    --showcase-height: 368px;
+    --showcase-lift: -220px;
+    margin-top: 40px;
+  }
+}
+
+.showcase-stage > * {
+  pointer-events: auto;
+}
+
+/* ------------------------------------------------------------------ *
+ * Product mockups
+ * ------------------------------------------------------------------ */
+
+.mockup {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.45;
+  letter-spacing: -0.01em;
+}
+
+.mockup-label {
+  font-family: var(--font-sans);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.mockup-divider {
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    var(--glass-border) 12%,
+    var(--glass-border) 88%,
+    transparent
+  );
+}
+
+.workflow-link {
+  stroke: color-mix(in srgb, var(--accent) 42%, transparent);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 5;
+  fill: none;
+}
+
+/* ------------------------------------------------------------------ *
+ * Motion
+ * ------------------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  .veil-grain {
+    display: none;
+  }
+
+  .workflow-link {
+    stroke-dasharray: none;
+  }
+}

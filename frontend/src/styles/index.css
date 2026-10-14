@@ -1,0 +1,106 @@
+@import 'tailwindcss';
+
+@import './variables.css';
+@import './home.css';
+
+@theme {
+  --color-ink-950: #05040a;
+  --color-ink-900: #0a0714;
+  --color-ink-800: #12101f;
+
+  --color-plum-700: #4c1d95;
+  --color-plum-600: #6d28d9;
+  --color-plum-500: #8b5cf6;
+  --color-plum-400: #a78bfa;
+  --color-plum-300: #c4b5fd;
+
+  --font-sans: 'Inter', 'Inter var', system-ui, -apple-system, 'Segoe UI',
+    Roboto, 'Helvetica Neue', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Menlo, Consolas,
+    'Liberation Mono', monospace;
+}
+
+@layer base {
+  html {
+    /* The veil is a fixed canvas; a dark base avoids a white flash before
+       the first WebGL frame paints. */
+    background-color: var(--bg-base);
+    color-scheme: dark;
+    -webkit-text-size-adjust: 100%;
+
+  }
+
+  body {
+    margin: 0;
+    background-color: var(--bg-base);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* The landing page puts a fixed backdrop behind an absolutely positioned
+     showcase stage, so horizontal bleed is intended — CardSwap's container is
+     wider than the viewport on small screens and the cards are meant to run
+     off the edge. Clipping it on `html`/`body` is unreliable: the viewport
+     propagation rules override `overflow-x` there, so the document stays
+     scrollable sideways. Every page instead clips on its own root element,
+     which has no propagation rules attached. `clip` (not `hidden`) keeps that
+     element out of the scroll-container chain so the page still scrolls
+     vertically. */
+  #app > * {
+    overflow-x: clip;
+  }
+
+  #app {
+    isolation: isolate;
+  }
+
+
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+    border-radius: 4px;
+  }
+
+  ::selection {
+    background: rgba(139, 92, 246, 0.36);
+    color: var(--text-primary);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Visually hidden but still announced by assistive tech. Used to give the
+   SVG display title a real readable equivalent — StrokeText marks its own
+   markup `role="img"` with only an aria-label, which is the wrong level for
+   the page's `<h1>`. */
+@utility visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+@utility shell {
+  width: 100%;
+  max-width: var(--shell-max);
+  margin-inline: auto;
+  padding-inline: var(--shell-pad);
+}
