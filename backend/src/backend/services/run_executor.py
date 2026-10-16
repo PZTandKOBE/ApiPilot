@@ -46,6 +46,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import os
 import re
 import time
@@ -57,7 +58,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db.database import AsyncSessionLocal
@@ -66,6 +67,7 @@ from backend.db.models.project import EnvironmentAuth, EnvironmentVariable
 from backend.db.models.result import (
     RunAssertion,
     RunEvidence,
+    RunEvent,
     RunScenario,
     RunStep,
     TestRun,
@@ -77,9 +79,13 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "EXECUTOR_DISABLED_ENV",
     "HTTP_TIMEOUT_SECONDS",
+    "RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS",
+    "RUN_RECOVERY_MAX_AGE_ENV",
     "RunExecutionContext",
     "build_url",
     "execute_run",
+    "recover_queued_runs",
+    "recovery_max_age_seconds",
     "resolve_variables",
     "schedule_run",
 ]
@@ -791,11 +797,18 @@ async def _abandon_step(
     )
 
 
-async def _settle_after_cancel(session: AsyncSession, run_id: uuid.UUID) -> None:
-    """What never ran, after a cancel: marked skipped and committed.
+async def _settle_unfinished(session: AsyncSession, run_id: uuid.UUID) -> None:
+    """Mark what never ran as skipped, without committing.
 
-    The live page settles its own view; this is what a *reload* reads.  The run
-    row itself is left alone -- the cancel route already decided it.
+    The transaction core of :func:`_settle_after_cancel`, separated so a caller
+    that is already in a transaction of its own can use it without inheriting a
+    ``commit()``.  Recovery is that caller: it has to mark the run failed, settle
+    these rows and append one ``run.failed`` event as a single unit, or leave
+    nothing behind at all.
+
+    The status filters make it idempotent -- a second pass updates no row -- and
+    safe for a run that had already produced results: a step that finished keeps
+    its status, and an assertion that was judged keeps it.
     """
     scenario_ids = select(RunScenario.id).where(RunScenario.run_id == run_id)
 
@@ -822,6 +835,15 @@ async def _settle_after_cancel(session: AsyncSession, run_id: uuid.UUID) -> None
         .where(RunScenario.run_id == run_id, RunScenario.status == "pending")
         .values(status=SKIPPED)
     )
+
+
+async def _settle_after_cancel(session: AsyncSession, run_id: uuid.UUID) -> None:
+    """What never ran, after a cancel: marked skipped and committed.
+
+    The live page settles its own view; this is what a *reload* reads.  The run
+    row itself is left alone -- the cancel route already decided it.
+    """
+    await _settle_unfinished(session, run_id)
     await session.commit()
 
 
@@ -1631,3 +1653,372 @@ def _forget(run_id: uuid.UUID, task: asyncio.Task[None]) -> None:
         logger.error(
             "run %s: the executor task ended with %s", run_id, type(error).__name__
         )
+
+
+# --------------------------------------------------------------------------- #
+# Startup recovery, phase one: runs that never started
+# --------------------------------------------------------------------------- #
+
+RUN_RECOVERY_MAX_AGE_ENV = "RUN_RECOVERY_QUEUED_MAX_AGE_SECONDS"
+RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS = 300.0
+"""How long a queued run may sit with nothing executing it before it is an orphan.
+
+schedule_run is called by the create path immediately after its commit, so a run
+that is still queued some minutes later was queued by a process that is no longer
+around -- it either died between the commit and the schedule, or was started with
+RUN_EXECUTOR_DISABLED set and never intended to run.
+
+Why a threshold at all: the only two options for an orphan are to execute it or to
+close it, and executing it is not recoverable.  A run carries a base URL and an
+environment; replaying one days later means really calling whatever that address
+answers today, with whatever credentials it holds now.  So the young ones -- the
+ones whose queueing process died moments ago -- are re-scheduled, and the old ones
+are closed with a failure that says why.  Neither branch ever re-sends a request: a
+run that has actually started is running, and this module never writes to a running
+row.
+
+The window is not a proof.  Nothing in the schema records which process queued a
+run, so no threshold can tell 'orphaned nine seconds ago' from 'queued nine seconds
+ago and about to be picked up'.  300 seconds is simply long enough that the second
+case cannot happen, because the scheduling call is synchronous with the create
+request.  Being wrong in the other direction is the expensive one, and the
+threshold is chosen to avoid it.
+"""
+
+
+def recovery_max_age_seconds() -> float:
+    """The configured window, or the default when it is unusable.
+
+    Read per call rather than at import: create_app() is a factory precisely so a
+    process can choose its environment, and a deployment that edits this should not
+    have to be careful about import order.  A value that is not a positive number is
+    refused loudly and the default is used -- a typo must not silently turn either
+    branch into an unlimited one.
+    """
+    raw = os.getenv(RUN_RECOVERY_MAX_AGE_ENV, "").strip()
+
+    if raw == "":
+        return RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS
+
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "%s=%r is not a number; using %s seconds",
+            RUN_RECOVERY_MAX_AGE_ENV,
+            raw,
+            RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS,
+        )
+        return RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS
+
+    if not math.isfinite(value):
+        # inf and nan are refused before the sign test: float("1e999") is inf, and a
+        # window of inf would make "age > window" false forever, so recovery would
+        # silently stop closing orphans -- the opposite of a typo that is too strict.
+        logger.warning(
+            "%s=%r is not finite; using %s seconds",
+            RUN_RECOVERY_MAX_AGE_ENV,
+            raw,
+            RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS,
+        )
+        return RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS
+
+    if value <= 0:
+        logger.warning(
+            "%s=%r is not positive; using %s seconds",
+            RUN_RECOVERY_MAX_AGE_ENV,
+            raw,
+            RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS,
+        )
+        return RUN_RECOVERY_MAX_AGE_DEFAULT_SECONDS
+
+    return value
+
+
+def _orphan_reason(max_age_seconds: float) -> str:
+    """Why a run was closed, in a sentence that survives being read later.
+
+    Rendered to the user as-is: executor-failed has no dictionary sentence, so the
+    read path falls back to a literal of the code and carries this as the detail.
+    It says what happened and under which threshold -- someone looking at a failed
+    run months from now has to be able to tell an orphan from a crash.
+    """
+    window = int(max_age_seconds) if max_age_seconds.is_integer() else max_age_seconds
+
+    return (
+        "queued for more than "
+        + str(window)
+        + "s with no executor: treated as orphaned and closed without running. "
+        + "Threshold "
+        + RUN_RECOVERY_MAX_AGE_ENV
+        + ", decided "
+        + _sse_timestamp(datetime.now(timezone.utc))
+        + "."
+    )
+
+
+async def _claim_orphaned_queued(
+    session: AsyncSession, *, run_id: uuid.UUID, max_age_seconds: float
+) -> bool:
+    """Close a queued run that never started, if it still qualifies.  One statement.
+
+    Every condition the decision rests on is re-checked here, against the row as the
+    database holds it now:
+
+    * status = 'queued' -- not IN (queued, running).  A run another process has
+      already claimed is 'running', and this must not touch it.  It is also what
+      makes two concurrent recoveries safe: the second blocks on the first one's row
+      lock, re-evaluates its WHERE against the committed row and matches nothing.
+    * started_at IS NULL -- the claim writes status and started_at together, so a
+      non-NULL started_at means something began even if the status disagrees.
+    * created_at older than the window, compared by the DATABASE clock.  Reading
+      the age in Python and then writing would decide on a value another transaction
+      can invalidate between the two statements.
+    * no run.started event -- the third independent witness that nothing ran.
+      started_at NULL with a run.started row is inconsistent data, and inconsistent
+      data is not an orphan; it is left for a human.
+
+    Returns whether this caller is the one that closed it.  False is a normal
+    outcome, not an error: it means somebody else got there first.
+    """
+    already_started = (
+        select(RunEvent.id)
+        .where(RunEvent.run_id == TestRun.id, RunEvent.event_type == "run.started")
+        .exists()
+    )
+
+    claimed = (
+        await session.execute(
+            update(TestRun)
+            .where(
+                TestRun.id == run_id,
+                TestRun.status == QUEUED,
+                TestRun.started_at.is_(None),
+                TestRun.created_at
+                < func.now() - func.make_interval(0, 0, 0, 0, 0, 0, max_age_seconds),
+                ~already_started,
+            )
+            .values(
+                status=FAILED,
+                finished_at=datetime.now(timezone.utc),
+                error_code=EXECUTOR_FAILED,
+                error_message=_orphan_reason(max_age_seconds),
+            )
+            .returning(TestRun.id)
+        )
+    ).scalar_one_or_none()
+
+    return claimed is not None
+
+
+async def _close_orphaned_queued(
+    run_id: uuid.UUID, *, max_age_seconds: float
+) -> bool | None:
+    """Claim an orphaned queued run and leave it terminal, in one transaction.
+
+    The claim, the settlement of its unfinished rows and the event are one unit
+    because each half is wrong on its own: a failed run whose steps are still
+    pending is a page that contradicts itself, and settled steps under a run that
+    is still queued is a run nothing will ever finish.
+
+    Three outcomes, and the caller must be able to tell them apart:
+
+    * ``True``  -- this caller claimed the run and the transaction committed.
+    * ``False`` -- the conditional UPDATE matched nothing, so another writer got
+      there first.  Nothing was written; this is a normal outcome, not a failure.
+    * ``None``  -- the transaction raised.  It was rolled back whole, and the
+      failure is reported as a failure rather than as somebody else winning a
+      race: those two want different sentences in a log and different counters.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            if not await _claim_orphaned_queued(
+                session, run_id=run_id, max_age_seconds=max_age_seconds
+            ):
+                await session.rollback()
+                logger.info(
+                    "run %s: not closed here, another writer claimed it first",
+                    run_id,
+                )
+                return False
+
+            await _settle_unfinished(session, run_id)
+
+            # The one writer for run_events, called exactly as the executor and the
+            # cancel route call it: no second allocator, no hand-built seq.
+            await append_run_event(
+                session,
+                run_id=run_id,
+                event_type="run.failed",
+                payload={
+                    "finishedAt": _sse_timestamp(datetime.now(timezone.utc)),
+                    "durationMs": 0,
+                    "failedStepId": None,
+                    "failure": run_failure_dict(
+                        EXECUTOR_FAILED, _orphan_reason(max_age_seconds)
+                    ),
+                },
+            )
+            await session.commit()
+
+        logger.warning(
+            "run %s: closed as an orphan, queued for more than %ss",
+            run_id,
+            max_age_seconds,
+        )
+
+        return True
+    except Exception:
+        logger.exception("run %s: the orphaned run could not be closed", run_id)
+        # None, not False: the caller must not report a rolled-back transaction as
+        # a lost race.  The rollback itself is the session context manager's.
+        return None
+
+
+async def _queued_age_seconds(run_id: uuid.UUID) -> float | None:
+    """How long the run has been queued, by the database clock, or None if gone.
+
+    Computed by PostgreSQL so that the value in Python only ever picks a branch;
+    the branch that writes re-derives the comparison itself.
+    """
+    async with AsyncSessionLocal() as session:
+        seconds = (
+            await session.execute(
+                select(func.extract("epoch", func.now() - TestRun.created_at)).where(
+                    TestRun.id == run_id
+                )
+            )
+        ).scalar_one_or_none()
+
+    return None if seconds is None else float(seconds)
+
+
+async def _recover_one(run_id: uuid.UUID, *, max_age_seconds: float) -> str:
+    """Decide what one non-terminal run needs, and do only that.
+
+    running is deliberately absent from every branch below.  A run in that state
+    may be executing in this process, in another one, or nowhere -- and nothing in
+    the schema tells them apart, so the only safe action is none.  _RUNNING_TASKS
+    is not evidence either: it is this process's own memory, and a run missing from
+    it may be running happily somewhere else.  Reliable recovery of 'running' needs
+    an executor lease or heartbeat, which this build does not have.
+
+    Returns a word describing what happened, for the caller to count.
+    """
+    try:
+        async with AsyncSessionLocal() as session:
+            row = (
+                await session.execute(
+                    select(TestRun.status, TestRun.started_at).where(TestRun.id == run_id)
+                )
+            ).one_or_none()
+
+            if row is None:
+                return "missing"
+
+            status, started_at = row
+
+            if status not in _ACTIVE_STATUSES:
+                return "terminal"
+
+            if status == RUNNING:
+                logger.info(
+                    "run %s: running, left alone (recovery does not judge liveness)",
+                    run_id,
+                )
+                return "running"
+
+            started_event = (
+                await session.execute(
+                    select(RunEvent.id)
+                    .where(
+                        RunEvent.run_id == run_id,
+                        RunEvent.event_type == "run.started",
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+        if started_at is not None or started_event is not None:
+            logger.warning(
+                "run %s: queued but shows signs of having started; left for a human",
+                run_id,
+            )
+            return "inconsistent"
+
+        # Its own connection, its own transaction: the closure re-checks the age and
+        # the status against the row as it stands, so this comparison decides only
+        # which statement to run, never the outcome.
+        age = await _queued_age_seconds(run_id)
+
+        if age is None:
+            return "gone"
+
+        if age <= max_age_seconds:
+            await schedule_run(run_id)
+            return "rescheduled"
+
+        closed = await _close_orphaned_queued(run_id, max_age_seconds=max_age_seconds)
+
+        if closed is None:
+            return "error"
+        return "closed" if closed else "lost-race"
+    except Exception:
+        logger.exception("run %s: recovery could not decide what to do with it", run_id)
+        return "error"
+
+
+async def recover_queued_runs() -> dict[str, int]:
+    """Phase one of startup recovery: nothing but runs that never started.
+
+    Called from the application lifespan, once, before the server answers requests.
+    It is safe to call again at any time and safe to call from several processes at
+    once -- every decision that writes is made by a conditional UPDATE in the
+    database, so the losers of a race are no-ops.
+
+    It is also safe to call when there is nothing to do, which is the normal case:
+    a process that shut down cleanly leaves no non-terminal runs.
+
+    RUN_EXECUTOR_DISABLED turns the whole thing off, matching schedule_run.  The
+    verification scripts set it because their runs are fixtures that must stay
+    exactly as created; recovery that ignored it would rewrite them the next time a
+    real server started against that database.
+
+    Nothing here raises.  Recovery is a repair, not a prerequisite: a database that
+    is unreachable, a row that cannot be read and a run that cannot be closed all
+    end in a log line, and the application starts anyway.
+    """
+    counts: dict[str, int] = {}
+
+    if os.getenv(EXECUTOR_DISABLED_ENV, "").strip().lower() in ("1", "true", "yes"):
+        logger.info(
+            "run recovery: skipped, %s is set",
+            EXECUTOR_DISABLED_ENV,
+        )
+        return counts
+
+    max_age_seconds = recovery_max_age_seconds()
+
+    try:
+        async with AsyncSessionLocal() as session:
+            candidates = list(
+                (
+                    await session.execute(
+                        select(TestRun.id)
+                        .where(TestRun.status.in_(_ACTIVE_STATUSES))
+                        .order_by(TestRun.created_at)
+                    )
+                ).scalars()
+            )
+    except Exception:
+        logger.exception("run recovery: the non-terminal runs could not be listed")
+        return counts
+
+    for run_id in candidates:
+        outcome = await _recover_one(run_id, max_age_seconds=max_age_seconds)
+        counts[outcome] = counts.get(outcome, 0) + 1
+
+    if counts:
+        logger.info("run recovery: %s", counts)
+
+    return counts
