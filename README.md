@@ -10,7 +10,7 @@
 
 **面向 API 开发与测试的 AI 辅助测试平台。** 支持手动发送 API 请求、解析 OpenAPI 文档、生成与审核测试计划，并通过后端执行引擎运行测试、查看断言结果与实时事件。
 
-> **项目状态：Early Development / Alpha。** 当前已具备真实的 Guest Session、Project 管理、安全 HTTP 代理、Agent 分析与测试计划、Run 执行和 SSE 事件流等基础能力，但仍有重要限制：完整 AI 测试链路尚未通过真实浏览器端到端验收，Run 启动恢复机制尚未实现，PDF 导出尚未实现。请勿将当前版本用于关键生产测试。
+> **项目状态：Early Development / Alpha。** 当前已具备真实的 Guest Session、Project 管理、安全 HTTP 代理、Agent 分析与测试计划、Run 执行和 SSE 事件流等基础能力，但仍有重要限制：完整 AI 测试链路尚未通过真实浏览器端到端验收，Run 启动恢复仍不完整（见「已知限制与路线图」），PDF 导出尚未实现。请勿将当前版本用于关键生产测试。
 
 ## 目录
 
@@ -72,7 +72,7 @@ AI API Testing Agent 希望把 API 测试流程整合到一个工作台中：
 | 后端 | Python、FastAPI、Pydantic、SQLAlchemy、Alembic、HTTPX、asyncio |
 | 数据库 | PostgreSQL |
 | AI 模型客户端 | DeepSeek API（真实 provider 链路仍需进一步端到端验证） |
-| 测试 | Vitest、TypeScript 类型检查、后端自定义验证脚本、受控浏览器 E2E harness |
+| 测试 | Vitest、TypeScript 类型检查、后端 pytest（`backend/tests/`）、后端自定义验证脚本、受控浏览器 E2E harness |
 
 ## 架构概览
 
@@ -171,6 +171,17 @@ uv run uvicorn main:app --reload
 
 如果你的本地配置使用了不同的数据库变量或启动入口，请以 `backend/pyproject.toml` 与后端配置模块为准。首次运行前请确认连接的是你自己准备的开发数据库。
 
+#### 可选环境变量：Run 启动恢复
+
+以下两项默认都不需要设置，属于运维/测试场景的开关。两项都由进程环境变量读取，**每次读取时取值，没有热更新或运行时刷新机制**——改值需要重启进程。
+
+| 变量 | 默认 | 作用 |
+|---|---|---|
+| `RUN_RECOVERY_QUEUED_MAX_AGE_SECONDS` | `300` | 恢复窗口（秒）。启动恢复用它判断一个仍在 `queued` 的 Run 是否已经过期：**未超过**窗口的会被重新调度；**超过**窗口且从未启动的会被收敛为 `failed`。值必须是**有限正数**；无法解析、非正数（如 `0`、`-5`）或非有限值（如 `1e999`、`inf`、`nan`）都会回退到默认 300 秒并记录一条 warning，不会因此变成「无限窗口」。 |
+| `RUN_EXECUTOR_DISABLED` | 未设置即启用 | 置位后**不启动后台 Run 执行器**，同时**跳过启动恢复**。判定规则是 `os.getenv(...).strip().lower() in ("1", "true", "yes")`，因此 `1` / `true` / `TRUE` / `yes`（含前后空白）都算置位，而 `0` / `false` / `no` 以及任意其他字符串都**不算置位**。跳过发生在**创建任何数据库 Session 之前**，所以禁用状态下恢复不会连接数据库。 |
+
+> `backend/scripts/verify_*.py` 里的部分脚本会设置 `RUN_EXECUTOR_DISABLED`，让它们创建的 Run 夹具保持原样、不被恢复流程改写。
+
 ### 2. 启动前端
 
 另开一个终端：
@@ -196,13 +207,23 @@ npm run verify  # vue-tsc 类型检查 + Vitest
 
 后端 `backend/scripts/verify_*.py` 包含多种自定义验证工具。**运行前请先阅读脚本说明及其数据库配置**：部分脚本会创建数据库夹具或 Guest Session，不应未经检查就对现有开发数据库执行。优先使用脚本明确提供的独立 scratch 数据库配置。
 
-最近一次已知的后端九个自定义验证套件结果为 **833 项检查、0 失败**，但并非本次 README 编写时重新执行；完整后端 pytest 套件尚未运行。真实浏览器 E2E 曾对手动 API 代理核心链路完成 32/32 项检查，但完整的 OpenAPI → Agent → 计划批准 → Run → 结果主链路尚未通过真实浏览器端到端验证。
+最近一次已知的后端九个自定义验证套件结果为 **833 项检查、0 失败**，但并非本次 README 编写时重新执行。真实浏览器 E2E 曾对手动 API 代理核心链路完成 32/32 项检查，但完整的 OpenAPI → Agent → 计划批准 → Run → 结果主链路尚未通过真实浏览器端到端验证。
+
+后端已有 pytest 测试体系，位于 `backend/tests/`，目前只覆盖 **Run 启动恢复**这一专项（`RUN_EXECUTOR_DISABLED` 等环境变量与独立 scratch 数据库的配合见下节）。最近一次已记录的专项结果为 **27 passed**（Task C10 实测，连续三次；本说明编写时未重新运行——运行会写入独立测试库，需先确认 `POSTGRES_DB` 指向该库）：
+
+```powershell
+cd backend
+$env:POSTGRES_DB = "<你的独立测试库>"
+python -m pytest tests/
+```
+
+> **这个数字只代表上述专项恢复测试的结果，不代表后端所有业务功能都已有 pytest 全量覆盖。** 其余后端能力目前仍以 `backend/scripts/verify_*.py` 自定义脚本为主要回归手段。
 
 ## 已知限制与路线图
 
 当前项目仍在积极开发中。以下内容尚未完成或仍缺少充分验证：
 
-- **Run 启动恢复：** 目前进程重启后，遗留的非终态 Run 可能停留在 `queued` 或 `running`；恢复机制尚未实现。
+- **Run 启动恢复（第一阶段已实现，仍不完整）：** 服务启动时会执行一次恢复，把超过恢复窗口且从未真正启动的 `queued` Run 收敛为 `failed`（写入一条 `run.failed` 事件，并结算未完成的 Scenario/Step/Assertion）；阈值内、尚未启动的 `queued` Run 会被重新调度。**仍然缺少**的是：已经进入 `running` 的 Run 没有 executor lease / heartbeat，重启后无法可靠区分「仍在执行」与「执行进程已死亡」，这类 Run 会被有意跳过；多 worker 部署下的跨进程并发也尚未实测。因此**不能把它理解为完整、全面的 Run 恢复已经交付**。
 - **AI 全链路验证：** 真实模型调用及从文档上传到 Run 结果的完整浏览器流程尚未完成端到端验收。
 - **OpenAPI YAML：** 服务端目前主要支持 JSON 格式解析，YAML 解析尚未完成。
 - **PDF/报告导出：** 尚未实现。
@@ -252,7 +273,7 @@ MIT 是宽松许可证：你可以自由使用、修改、分发本项目，包�
 
 **AI API Testing Agent** is an early-stage AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, and PostgreSQL. It provides a manual API client, a secured backend proxy, an OpenAPI-to-test-plan workflow, deterministic test execution, assertions, persisted run events, and SSE updates.
 
-The project is **not production-ready yet**. Startup recovery for in-flight runs is not implemented; the complete AI workflow has not been verified end to end in a real browser; PDF export, YAML OpenAPI parsing, server-side Collections/History persistence, and real user authentication are not implemented. See the sections above for setup instructions, verification status, and current limitations.
+The project is **not production-ready yet**. Startup recovery is implemented only for its first phase: an orphaned `queued` run that never started is settled on startup, and a `queued` run inside the recovery window is re-scheduled, while a run already in `running` is deliberately left alone because there is no executor lease or heartbeat to tell a live run from a dead one; the complete AI workflow has not been verified end to end in a real browser; PDF export, YAML OpenAPI parsing, server-side Collections/History persistence, and real user authentication are not implemented. See the sections above for setup instructions, verification status, and current limitations.
 
 ## License
 
