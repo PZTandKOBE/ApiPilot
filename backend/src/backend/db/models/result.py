@@ -46,10 +46,12 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     String,
     Text,
     UniqueConstraint,
@@ -80,6 +82,7 @@ __all__ = [
     "RunAssertion",
     "RunEvent",
     "RunEvidence",
+    "RunReport",
     "RunScenario",
     "RunStep",
     "TestRun",
@@ -242,6 +245,47 @@ class TestRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
 
     def __repr__(self) -> str:
         return f"<TestRun id={self.id!r} status={self.status!r}>"
+
+
+class RunReport(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
+    """One immutable PDF report generated from one finished run.
+
+    The bytes live in the row rather than on a filesystem path.  That makes the
+    metadata and the file one atomic database write: a successful row cannot
+    name a missing file, and a failed insert cannot leave an orphan PDF.  It
+    also removes path traversal from the download route entirely -- the only
+    addressable value is the report UUID.
+    """
+
+    __tablename__ = "run_reports"
+    __table_args__ = (
+        CheckConstraint("byte_size > 0", name="ck_run_reports_byte_size_positive"),
+        Index("ix_run_reports_project_created_at", "project_id", "created_at"),
+    )
+
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    run_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("test_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(
+        String(100), nullable=False, default="application/pdf", server_default="application/pdf"
+    )
+    byte_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+    def __repr__(self) -> str:
+        return f"<RunReport id={self.id!r} run_id={self.run_id!r} bytes={self.byte_size!r}>"
 
 
 class RunScenario(UUIDPrimaryKeyMixin, Base):

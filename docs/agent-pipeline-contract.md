@@ -189,7 +189,7 @@ Phase 8.1 之前，Agent 产物进入系统的**唯一**通道是 create-run：
 
 | 字段 | 内容 | 生成规则（现状，来自 `mock/agent/analyze.ts`） |
 |---|---|---|
-| `endpoints` | `ApiEndpoint[]` | 每个 operation 一条：`id` / `method` / `path` / `resourceId` / `summary` / `requiresAuth` / `pathParams` / `requiredBodyProps` / `constrainedBodyProps` / `responseStatuses` / `responseProps` |
+| `endpoints` | `ApiEndpoint[]` | 每个 operation 一条：`id` / `method` / `path` / `resourceId` / `summary` / `requiresAuth` / `securityDeclared` / `securitySchemes` / `securityOptional` / `pathParams` / `requiredBodyProps` / `constrainedBodyProps` / `responseStatuses` / `responseProps` |
 | `resources` | `ApiResource[]` | 按 tag（无 tag 则路径首段）分组，`endpointIds` 指向 endpoints |
 | `authentication` | `ApiAuthentication` | `scheme ∈ {none, bearer, apiKey, basic, oauth2}`；`tokenSourceEndpointId` 指登录端点；`tokenField` 指令牌所在响应字段 |
 | `dependencies` | `ApiDependency[]` | `kind ∈ {token, identity, reference, lifecycle, sub-resource}`，`binding` 是跨边携带的值名 |
@@ -219,6 +219,25 @@ pending   ──► analyzing ──► completed
 | `failed` | 未产出计划 | 解析失败 / 校验失败 / 计划冲突；**原因随创建响应返回**（错误信封或 `failure`），任务行本身无列可存（§13 G4）：`GET` 一个失败任务只答 `status` |
 
 **禁止**：`completed` 不等于 `approved`。计划状态与任务状态是两个正交的词表（`draft/in_review/approved/rejected` vs `pending/analyzing/completed/failed`），不得互相赋值。
+
+
+### 4.4 OpenAPI security facts（C32）
+
+`ApiEndpoint` 保留有效 security 声明的三个事实，同时保留原有的 `requiresAuth` 兼容字段：
+
+| 字段 | 含义 |
+|---|---|
+| `securityDeclared` | operation 或 document 根部确实声明了 `security`；operation 的空列表也算声明 |
+| `securitySchemes` | 有效 security requirement 中出现的 scheme 名，按文档顺序去重 |
+| `securityOptional` | 任一 requirement 是空对象 `{}`，表示允许匿名访问 |
+
+规则：
+
+- operation 级 `security` 覆盖 document 根部，`security: []` 是**显式 public**，不是“继承 root”。
+- `requiresAuth=true` 只在至少一个非空 requirement 且没有匿名 `{}` 时成立；仅有 `{}` 或 `[]` 时为 false。
+- 完全没有 security 声明时 `securityDeclared=false`，与显式 public 的 `securityDeclared=true` 区分。
+- 这些字段进入 `specification_facts` 与 `understanding_facts`，模型必须原样回显；`domain_issues` 比较它们，不能由模型重写。
+- 确定性 Planner 只在 token source 与**受保护的** identity endpoint 同时存在时生成 authentication scenario；public、optional 或未声明的 identity 不生成该场景。普通 public endpoint 仍由 smoke 覆盖，不因变量存在而臆造认证场景。
 
 ---
 
@@ -466,6 +485,26 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 **读回兼容。** `AgentPlanResponse` 增加 `version` / `isCurrent` / `runCount`；`PlanPayload` 接受这些可选读回字段，但 create-run 不以它们选择版本——已有 plan 行才是权威。
 
 ---
+
+
+### 6.6 运行时变量作用域（C32）
+
+每个 Run 创建一个 `RunExecutionContext`，同一个 context 传给所有 `_run_scenario()`：
+
+- `variables` 是 Run 启动时从 environment 读取一次的映射；`runtime` 初始为空。
+- `extract` 成功后写入 `runtime[produces]`；后续步骤和**同一 Run 的后续场景**都读取同一个 `runtime`。
+- 替换时 runtime 优先于 environment；这正是 Extract 覆盖用户输入值的语义。
+- 缺失变量不会被替换为空串或原样发送：resolver 收集名字，步骤在发 HTTP 之前失败，错误码是 `missing-runtime-variable`。
+- `runtime` 只存在于进程内；不写 `environment_variables`、不写 `test_runs`、不进入事件 payload。Run 历史只保存名字，不保存值。
+- 前端 Run 详情的 `variableKeys` 是运行前的初始变量名；运行时变量名从成功的 `extract` 步骤 evidence 派生，单独显示为 Runtime variables，并说明其作用域是整个 Run。
+- 没有新增 schema 列或 migration；旧计划的执行路径不变。
+
+### 6.7 断言与提取描述（C32）
+
+- `arrange_assertion_steps()` 不再复用模型的单个 scenario-level assert description。每个 request 后的 assert step 使用 `console.aiTest.step.assertRequestResponse`，参数是该方法与路径，只描述它实际读取的响应。
+- extract step 使用 `console.aiTest.step.extractVariableFrom`，描述变量名、来源 method 和 path，供读者理解下游使用。
+- assertion 的 description 由 kind/target/expected 生成：status 用 `statusIs`，field present 用 `fieldPresent`，field 等值用 `fieldIs`，header 用 `headerIs`。模型提供的 assertion description 只作为设计输入，不直接成为计划行文案。
+- 这不改变 assertion 的 target、expected、执行顺序、C30-M 的多请求绑定或 run snapshot；只修正展示语义。
 
 ## 7. Prompt Engineering Boundary
 

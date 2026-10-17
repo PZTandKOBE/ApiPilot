@@ -230,6 +230,9 @@ class AgentEndpointResponse(Schema):
     resource_id: str
     summary: LocalizedText
     requires_auth: bool
+    security_declared: bool = False
+    security_schemes: list[str] = Field(default_factory=list)
+    security_optional: bool = False
     path_params: list[str] = Field(default_factory=list)
     required_body_props: list[str] = Field(default_factory=list)
     constrained_body_props: list[str] = Field(default_factory=list)

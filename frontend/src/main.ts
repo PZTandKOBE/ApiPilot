@@ -8,6 +8,7 @@ import 'element-plus/dist/index.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 import '@/styles/index.css'
 import '@/styles/console.css'
+import '@/styles/report.css'
 
 import App from '@/App.vue'
 import router from '@/router'

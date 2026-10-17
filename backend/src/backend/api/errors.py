@@ -100,6 +100,9 @@ RUN_MESSAGE_KEYS: frozenset[str] = frozenset(
         "console.runs.errors.cancelFailed",
         "console.runs.errors.dismiss",
         "console.runs.failure.notExecutable",
+        "console.report.notFound",
+        "console.report.notReady",
+        "console.report.generateFailed",
     }
 )
 """The nine run-related keys present in ``frontend/src/locales/console/en-US.ts``.

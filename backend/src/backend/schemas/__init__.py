@@ -13,6 +13,7 @@ from backend.schemas.common import (
     LocalizedMessage,
     LocalizedText,
 )
+from backend.schemas.report import RunReportResponse
 from backend.schemas.run import (
     ApprovalStatus,
     AssertionKind,
@@ -60,6 +61,7 @@ __all__ = [
     "RunEvidenceResponse",
     "RunFailureResponse",
     "RunListItem",
+    "RunReportResponse",
     "RunResponse",
     "RunScenarioResponse",
     "RunStatus",

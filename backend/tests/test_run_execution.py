@@ -26,6 +26,7 @@ authority and not a server-side one.
 
 from __future__ import annotations
 
+import copy
 import json
 import uuid
 from typing import Any
@@ -202,8 +203,13 @@ def _plan_payload(status: str = "approved") -> dict[str, Any]:
     }
 
 
-def _run_body(project_public_id: str, *, status: str = "approved") -> dict[str, Any]:
-    plan = _plan_payload(status)
+def _run_body(
+    project_public_id: str,
+    *,
+    status: str = "approved",
+    plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    plan = plan if plan is not None else _plan_payload(status)
     plan["projectId"] = project_public_id
     return {
         "projectId": project_public_id,
@@ -270,7 +276,14 @@ def _install_client(monkeypatch: pytest.MonkeyPatch) -> type[_RecordingClient]:
     return _RecordingClient
 
 
-async def _create_run(fixtures, stack, monkeypatch, *, status: str = "approved"):
+async def _create_run(
+    fixtures,
+    stack,
+    monkeypatch,
+    *,
+    status: str = "approved",
+    plan: dict[str, Any] | None = None,
+):
     """Create a run through the service, without letting it execute yet.
 
     runs.create_run schedules the executor as its last act.  Scheduling is
@@ -281,7 +294,9 @@ async def _create_run(fixtures, stack, monkeypatch, *, status: str = "approved")
     await fixtures.commit()
 
     public_id = await _project_public_id(fixtures, stack["project"])
-    payload = RunCreateRequest.model_validate(_run_body(public_id, status=status))
+    payload = RunCreateRequest.model_validate(
+        _run_body(public_id, status=status, plan=plan)
+    )
 
     async def _do_not_schedule(run_id):
         return None
@@ -549,6 +564,134 @@ async def test_extract_step_feeds_the_step_that_consumes_it(
     assert len(sent) == 2
     # orderId is nowhere in the submitted plan: it comes out of the first response.
     assert sent[1].url.query.decode() == "for=order_1"
+
+
+async def test_an_extract_is_visible_to_a_later_scenario(
+    fixtures, stack, read_session, monkeypatch
+) -> None:
+    """The runtime context is run-scoped, not scenario-scoped.
+
+    The first scenario creates the variable; the second scenario is a separate
+    story that starts after it.  This is the contract the console must explain:
+    Extract values live for the whole run, and no environment value is needed.
+    """
+    client = _install_client(monkeypatch)
+    plan = copy.deepcopy(_plan_payload())
+    plan["scenarios"].append(
+        {
+            "id": "scenario_c17_second",
+            "index": 1,
+            "name": {"text": "read the order from a later scenario"},
+            "description": {"text": "uses the run-scoped variable"},
+            "expected": {"text": "the later read succeeds"},
+            "riskLevel": "low",
+            "steps": [
+                {
+                    "id": "step_c17_later_read",
+                    "index": 0,
+                    "kind": "request",
+                    "description": {"text": "read with the run-scoped variable"},
+                    "endpointId": None,
+                    "method": "GET",
+                    "path": "/orders/{{orderId}}",
+                    "produces": None,
+                    "consumes": ["orderId"],
+                },
+                {
+                    "id": "step_c17_later_assert",
+                    "index": 1,
+                    "kind": "assert",
+                    "description": {"text": "check the later read"},
+                    "endpointId": None,
+                    "method": None,
+                    "path": None,
+                    "produces": None,
+                    "consumes": [],
+                },
+            ],
+            "assertions": [
+                {
+                    "id": "assertion_c17_later_status",
+                    "kind": "status",
+                    "target": "status",
+                    "expected": "200",
+                    "description": {"text": "the later read answers 200"},
+                }
+            ],
+        }
+    )
+
+    run_id = await _create_run(fixtures, stack, monkeypatch, plan=plan)
+    await run_executor.execute_run(run_id)
+
+    sent = list(client.sent)
+    assert [request.method for request in sent] == ["GET", "POST", "GET"]
+    assert sent[-1].url.path == "/orders/order_1"
+    run = (
+        await read_session.execute(select(_TestRun).where(_TestRun.id == run_id))
+    ).scalar_one()
+    assert run.status == "passed"
+
+
+async def test_a_missing_variable_fails_before_an_uninterpolated_request(
+    fixtures, stack, read_session, monkeypatch
+) -> None:
+    """A missing value is a failure, not a literal template sent to the API."""
+    client = _install_client(monkeypatch)
+    plan = copy.deepcopy(_plan_payload())
+    plan["scenarios"] = [
+        {
+            "id": "scenario_c17_missing",
+            "index": 0,
+            "name": {"text": "needs an id the run does not have"},
+            "description": {"text": "the variable is absent"},
+            "expected": {"text": "the run refuses before calling"},
+            "riskLevel": "low",
+            "steps": [
+                {
+                    "id": "step_c17_missing_read",
+                    "index": 0,
+                    "kind": "request",
+                    "description": {"text": "read with an absent variable"},
+                    "endpointId": None,
+                    "method": "GET",
+                    "path": "/orders/{{orderId}}",
+                    "produces": None,
+                    "consumes": ["orderId"],
+                },
+                {
+                    "id": "step_c17_missing_assert",
+                    "index": 1,
+                    "kind": "assert",
+                    "description": {"text": "check the missing read"},
+                    "endpointId": None,
+                    "method": None,
+                    "path": None,
+                    "produces": None,
+                    "consumes": [],
+                },
+            ],
+            "assertions": [
+                {
+                    "id": "assertion_c17_missing_status",
+                    "kind": "status",
+                    "target": "status",
+                    "expected": "200",
+                    "description": {"text": "the read would answer 200"},
+                }
+            ],
+        }
+    ]
+
+    run_id = await _create_run(fixtures, stack, monkeypatch, plan=plan)
+    await run_executor.execute_run(run_id)
+
+    assert list(client.sent) == []
+    run = (
+        await read_session.execute(select(_TestRun).where(_TestRun.id == run_id))
+    ).scalar_one()
+    assert run.status == "failed"
+    assert run.error_code == "missing-runtime-variable"
 
 
 # --------------------------------------------------------------------------- #

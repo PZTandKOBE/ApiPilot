@@ -414,6 +414,9 @@ def specification_facts(
                     "resourceId": endpoint.resource_id,
                     "summary": endpoint.summary,
                     "requiresAuth": endpoint.requires_auth,
+                    "securityDeclared": endpoint.security_declared,
+                    "securitySchemes": list(endpoint.security_schemes),
+                    "securityOptional": endpoint.security_optional,
                     "pathParams": list(endpoint.path_params),
                     "requiredBodyProps": list(endpoint.required_body_props),
                     "constrainedBodyProps": list(endpoint.constrained_body_props),
@@ -659,6 +662,9 @@ def understanding_facts(
                         "resourceId": endpoint.resource_id,
                         "summary": endpoint.summary,
                         "requiresAuth": endpoint.requires_auth,
+                        "securityDeclared": endpoint.security_declared,
+                        "securitySchemes": list(endpoint.security_schemes),
+                        "securityOptional": endpoint.security_optional,
                         "pathParams": list(endpoint.path_params),
                         "requiredBodyProps": list(endpoint.required_body_props),
                         "constrainedBodyProps": list(endpoint.constrained_body_props),
@@ -867,6 +873,9 @@ def _fact_issues(
             given.resource_id,
             given.summary.model_dump(),
             given.requires_auth,
+            given.security_declared,
+            list(given.security_schemes),
+            given.security_optional,
             list(given.path_params),
             list(given.required_body_props),
             list(given.constrained_body_props),
@@ -879,6 +888,9 @@ def _fact_issues(
             fact.resource_id,
             fact.summary,
             fact.requires_auth,
+            fact.security_declared,
+            list(fact.security_schemes),
+            fact.security_optional,
             list(fact.path_params),
             list(fact.required_body_props),
             list(fact.constrained_body_props),
@@ -1169,9 +1181,6 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
         subject: agent_plan.ApiEndpointFacts | None = None
         request_steps: dict[str, str] = {}
         subject_step_id: str | None = None
-        assert_description = next(
-            (step.description for step in scenario.steps if step.kind == "assert"), None
-        )
 
         for index, step in enumerate(scenario.steps):
             if step.kind == "request":
@@ -1216,7 +1225,13 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
                         ),
                         index=index,
                         kind="extract",
-                        description=step.description,
+                        description=(
+                            agent_plan.extract_step_description(
+                                owner, step.produces or ""
+                            )
+                            if owner is not None
+                            else step.description
+                        ),
                         endpoint_id=owner.id if owner is not None else None,
                         method=None,
                         path=None,
@@ -1269,7 +1284,9 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
                 kind=assertion.kind,
                 target=assertion.target,
                 expected=assertion.expected,
-                description=assertion.description,
+                description=agent_plan.assertion_description(
+                    assertion.kind, assertion.target, assertion.expected
+                ),
             )
             built_count += 1
 
@@ -1282,9 +1299,7 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
                 groups.setdefault(owner_step_id, []).append(built)
 
         if request_steps:
-            steps, assertions = agent_plan.arrange_assertion_steps(
-                steps, groups, assert_description=assert_description
-            )
+            steps, assertions = agent_plan.arrange_assertion_steps(steps, groups)
             assertions.extend(unbound)
         else:
             assertions = unbound

@@ -26,7 +26,7 @@ const ui = useUiStore()
 
 <template>
   <header
-    class="flex h-[var(--console-topbar-h)] shrink-0 items-center gap-1.5 border-b border-[var(--console-border)] bg-[var(--console-surface)] px-2.5 sm:gap-2 sm:px-3"
+    class="console-topbar flex h-[var(--console-topbar-h)] shrink-0 items-center gap-1.5 border-b border-[var(--console-border)] bg-[var(--console-surface)] px-2.5 sm:gap-2 sm:px-3"
   >
     <button
       type="button"

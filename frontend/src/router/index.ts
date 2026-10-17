@@ -123,6 +123,20 @@ const routes: RouteRecordRaw[] = [
             props: true,
             meta: { titleKey: 'console.runs.title' },
           },
+          {
+            path: 'runs/:runId/report',
+            name: 'console-project-run-report',
+            component: () => import('@/views/console/RunReportView.vue'),
+            props: true,
+            meta: { titleKey: 'console.report.title' },
+          },
+          {
+            path: 'reports',
+            name: 'console-project-reports',
+            component: () => import('@/views/console/ReportsView.vue'),
+            props: true,
+            meta: { titleKey: 'console.report.centerTitle' },
+          },
         ],
       },
       {

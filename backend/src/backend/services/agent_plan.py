@@ -106,9 +106,13 @@ AGENT_TEXT_KEYS: frozenset[str] = frozenset(
         "console.aiTest.step.createResource",
         "console.aiTest.step.readResource",
         "console.aiTest.step.assertResponse",
+        "console.aiTest.step.assertRequestResponse",
         "console.aiTest.step.extractVariable",
+        "console.aiTest.step.extractVariableFrom",
         "console.aiTest.assertion.statusIs",
         "console.aiTest.assertion.fieldPresent",
+        "console.aiTest.assertion.fieldIs",
+        "console.aiTest.assertion.headerIs",
         "console.aiTest.dependencies.rationaleToken",
         "console.aiTest.dependencies.rationaleLifecycle",
     }
@@ -219,6 +223,14 @@ class ApiEndpointFacts:
         return f"{self.method} {self.path}"
 
     request_body: dict[str, Any] | None = None
+    # The effective OpenAPI security declaration, not just its boolean effect.
+    # security_declared separates "public because security: []" from "no
+    # declaration at all"; security_schemes names what the document requires;
+    # security_optional is true when an empty requirement ({}) allows anonymous
+    # access.
+    security_declared: bool = False
+    security_schemes: tuple[str, ...] = ()
+    security_optional: bool = False
 
 @dataclass(frozen=True)
 class ApiResourceFacts:
@@ -563,13 +575,33 @@ def _response_facts(operation: dict[str, Any]) -> tuple[tuple[int, ...], tuple[s
     return tuple(statuses), props
 
 
-def _is_protected(document: dict[str, Any], operation: dict[str, Any]) -> bool:
-    own = operation.get("security")
-    if isinstance(own, list):
-        return len(own) > 0
+def _security_facts(
+    document: dict[str, Any], operation: dict[str, Any]
+) -> tuple[bool, bool, tuple[str, ...], bool]:
+    """The operation's effective security, including the empty-list override.
 
-    global_ = document.get("security")
-    return isinstance(global_, list) and len(global_) > 0
+    Returns (requires_auth, declared, schemes, optional).  An operation-level
+    list wins over the document's root list even when it is empty: an empty
+    security list means public, not "inherit".  An empty requirement object is
+    anonymous access, so it makes authentication optional rather than required.
+    """
+    own = operation.get("security")
+    effective = own if own is not None else document.get("security")
+
+    if not isinstance(effective, list):
+        return False, False, (), False
+
+    requirements = [item for item in effective if isinstance(item, dict)]
+    schemes: list[str] = []
+    for requirement in requirements:
+        for name in requirement:
+            if name not in schemes:
+                schemes.append(name)
+
+    optional = any(len(requirement) == 0 for requirement in requirements)
+    requires_auth = any(len(requirement) > 0 for requirement in requirements) and not optional
+
+    return requires_auth, True, tuple(schemes), optional
 
 
 def _summary_of(operation: dict[str, Any], method: str, path: str) -> dict[str, str]:
@@ -634,6 +666,10 @@ def _extract_endpoints(
             )
             statuses, props = _response_facts(operation_record)
 
+            requires_auth, security_declared, security_schemes, security_optional = (
+                _security_facts(document, operation_record)
+            )
+
             endpoints.append(
                 ApiEndpointFacts(
                     id=endpoint_key,
@@ -641,7 +677,10 @@ def _extract_endpoints(
                     path=path,
                     resource_id=resource_id,
                     summary=_summary_of(operation_record, upper, path),
-                    requires_auth=_is_protected(document, operation_record),
+                    requires_auth=requires_auth,
+                    security_declared=security_declared,
+                    security_schemes=security_schemes,
+                    security_optional=security_optional,
                     path_params=path_params_of(path),
                     required_body_props=required,
                     constrained_body_props=constrained,
@@ -1141,12 +1180,24 @@ def _request_step(
     )
 
 
+def extract_step_description(endpoint: ApiEndpointFacts, variable: str) -> dict[str, Any]:
+    """Name both the variable and the response it is lifted from."""
+    return _message(
+        "console.aiTest.step.extractVariableFrom",
+        {
+            "variable": variable,
+            "method": endpoint.method,
+            "path": request_step_path(endpoint),
+        },
+    )
+
+
 def _extract_step(index: int, endpoint: ApiEndpointFacts, variable: str) -> PlanStep:
     return PlanStep(
         id=extract_step_key(endpoint.id, variable),
         index=index,
         kind="extract",
-        description=_message("console.aiTest.step.extractVariable", {"variable": variable}),
+        description=extract_step_description(endpoint, variable),
         endpoint_id=endpoint.id,
         method=None,
         path=None,
@@ -1169,6 +1220,32 @@ def _assert_step(index: int) -> PlanStep:
     )
 
 
+def assertion_description(kind: str, target: str, expected: str) -> dict[str, Any]:
+    """Describe an assertion from the value it actually reads.
+
+    The model's own assertion copy can be a scenario-level sentence; the plan
+    row has to name the response status, field or header this assertion reads.
+    Kind and target are the binding, so this never parses an assertion key.
+    """
+    if kind == "status":
+        return _message("console.aiTest.assertion.statusIs", {"status": expected})
+
+    if kind == "header":
+        header = target.removeprefix("header.")
+        return _message(
+            "console.aiTest.assertion.headerIs",
+            {"header": header, "value": expected},
+        )
+
+    field = target.removeprefix("body.")
+    if expected == "present":
+        return _message("console.aiTest.assertion.fieldPresent", {"field": field})
+
+    return _message(
+        "console.aiTest.assertion.fieldIs", {"field": field, "value": expected}
+    )
+
+
 def _status_assertion(endpoint: ApiEndpointFacts) -> PlanAssertion:
     status = _success_status(endpoint)
     return PlanAssertion(
@@ -1176,15 +1253,13 @@ def _status_assertion(endpoint: ApiEndpointFacts) -> PlanAssertion:
         kind="status",
         target="status",
         expected=str(status),
-        description=_message("console.aiTest.assertion.statusIs", {"status": status}),
+        description=assertion_description("status", "status", str(status)),
     )
 
 
 def arrange_assertion_steps(
     steps: Sequence[PlanStep],
     groups: Mapping[str, Sequence[PlanAssertion]],
-    *,
-    assert_description: Any | None = None,
 ) -> tuple[list[PlanStep], list[PlanAssertion]]:
     """Put each request's assertions in an assert step directly after it.
 
@@ -1192,7 +1267,8 @@ def arrange_assertion_steps(
     executor judges an assertion against the response current at the assert step
     it hangs off.  A scenario-level assert step at the end would therefore judge
     the create's 201 against the read's 200, so the layout is built here, once,
-    for both planner paths.
+    for both planner paths.  Each assert step names its own request: a design's
+    single assert-marker description cannot describe both responses honestly.
 
     ``groups`` maps a **request step id** to the assertions that read its
     response -- the association is the caller's real endpoint binding, never a
@@ -1231,7 +1307,17 @@ def arrange_assertion_steps(
             id=assert_id_for(index),
             index=index,
             kind="assert",
-            description=assert_description or _message("console.aiTest.step.assertResponse"),
+            description=(
+                _message(
+                    "console.aiTest.step.assertRequestResponse",
+                    {
+                        "method": step.method or "",
+                        "path": step.path or "",
+                    },
+                )
+                if step.method is not None and step.path is not None
+                else _message("console.aiTest.step.assertResponse")
+            ),
             endpoint_id=None,
             method=None,
             path=None,
@@ -1281,6 +1367,12 @@ def _authentication_scenario(understanding: Understanding) -> PlanScenario | Non
     if source is None or identity is None:
         return None
 
+    # A public identity endpoint (operation-level security: [] or no declaration)
+    # gives no credential anything to prove.  Only a protected identity endpoint
+    # justifies the login/extract/read scenario.
+    if not identity.requires_auth:
+        return None
+
     token_field = authentication.token_field or "token"
 
     login = _request_step(0, source, "console.aiTest.step.login", {}, [])
@@ -1303,8 +1395,8 @@ def _authentication_scenario(understanding: Understanding) -> PlanScenario | Non
                     kind="field",
                     target=f"body.{token_field}",
                     expected="present",
-                    description=_message(
-                        "console.aiTest.assertion.fieldPresent", {"field": token_field}
+                    description=assertion_description(
+                        "field", f"body.{token_field}", "present"
                     ),
                 ),
             ],
@@ -1409,8 +1501,8 @@ def _lifecycle_scenarios(understanding: Understanding) -> list[PlanScenario]:
                         kind="field",
                         target=f"body.{id_field}",
                         expected="present",
-                        description=_message(
-                            "console.aiTest.assertion.fieldPresent", {"field": id_field}
+                        description=assertion_description(
+                            "field", f"body.{id_field}", "present"
                         ),
                     ),
                 ],

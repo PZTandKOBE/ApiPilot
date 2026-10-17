@@ -1,0 +1,283 @@
+/* C33 run report: screen preview and a clean, paginated print sheet. */
+
+.report-page {
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+
+.report-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.report-document {
+  background: #fff;
+  color: #1f2937;
+  border: 1px solid #e5e7eb;
+  border-radius: 0.5rem;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.04);
+  padding: 2.25rem 2.5rem 2rem;
+  font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "SimSun", sans-serif;
+  font-size: 10.5pt;
+  line-height: 1.6;
+}
+
+.report-kicker {
+  margin: 0;
+  color: #6b7280;
+  font-size: 8pt;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.report-title {
+  margin: 0.35rem 0 0;
+  color: #111827;
+  font-size: 22pt;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.report-generated {
+  margin: 0.4rem 0 0;
+  color: #6b7280;
+  font-size: 9pt;
+}
+
+.report-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem 1.5rem;
+  margin: 1.25rem 0 0;
+  padding: 1rem 0;
+  border-top: 1px solid #e5e7eb;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.report-meta__label {
+  color: #6b7280;
+  font-size: 8pt;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.report-meta__value {
+  color: #111827;
+  font-size: 9.5pt;
+  overflow-wrap: anywhere;
+}
+
+.report-section {
+  margin-top: 1.5rem;
+}
+
+.report-section h2 {
+  margin: 0 0 0.55rem;
+  color: #111827;
+  font-size: 13pt;
+  font-weight: 700;
+}
+
+.report-counts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.5rem;
+  margin: 0;
+}
+
+.report-count {
+  border: 1px solid #e5e7eb;
+  border-radius: 0.35rem;
+  padding: 0.55rem 0.65rem;
+}
+
+.report-count__label {
+  color: #6b7280;
+  font-size: 8pt;
+}
+
+.report-count__value {
+  margin-top: 0.15rem;
+  color: #111827;
+  font-size: 14pt;
+  font-weight: 700;
+}
+
+.report-scenario {
+  margin-top: 0.9rem;
+  break-inside: auto;
+}
+
+.report-scenario h3 {
+  margin: 0 0 0.35rem;
+  color: #111827;
+  font-size: 11pt;
+  font-weight: 700;
+  break-after: avoid;
+}
+
+.report-scenario__meta {
+  margin: 0 0 0.45rem;
+  color: #6b7280;
+  font-size: 8.5pt;
+}
+
+.report-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 8.8pt;
+}
+
+.report-table th,
+.report-table td {
+  border: 1px solid #e5e7eb;
+  padding: 0.35rem 0.45rem;
+  vertical-align: top;
+  text-align: left;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.report-table th {
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 8pt;
+  font-weight: 700;
+}
+
+.report-table tr {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+.report-evidence {
+  margin: 0.25rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: #4b5563;
+}
+
+.report-evidence li {
+  overflow-wrap: anywhere;
+}
+
+.report-failure {
+  margin: 0.25rem 0 0;
+  color: #991b1b;
+  overflow-wrap: anywhere;
+}
+
+.report-empty {
+  margin: 0;
+  color: #6b7280;
+  font-size: 9pt;
+}
+
+.report-footnote {
+  margin-top: 1.5rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid #e5e7eb;
+  color: #6b7280;
+  font-size: 8pt;
+  overflow-wrap: anywhere;
+}
+
+@media print {
+  @page {
+    size: A4;
+    margin: 14mm 12mm 16mm;
+
+    @bottom-center {
+      content: "Page " counter(page) " / " counter(pages);
+      color: #6b7280;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "SimSun", sans-serif;
+      font-size: 8pt;
+    }
+  }
+
+  .console-topbar,
+  .console-sidebar,
+  .console-drawer,
+  .report-toolbar {
+    display: none !important;
+  }
+
+  .console-shell,
+  .console-shell > div,
+  .console-scroll,
+  .console-scroll > main {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .console-scroll {
+    padding: 0 !important;
+  }
+
+  .report-page {
+    max-width: none;
+    margin: 0;
+    padding: 0;
+  }
+
+  .report-document {
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    padding: 0 0 6mm;
+    font-size: 10pt;
+    line-height: 1.55;
+  }
+
+  .report-table {
+    font-size: 8.5pt;
+  }
+
+  .report-table thead {
+    display: table-header-group;
+  }
+
+  .report-table tr {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+
+  .report-section,
+  .report-scenario {
+    break-inside: auto;
+  }
+
+  .report-section h2,
+  .report-scenario h3 {
+    break-after: avoid;
+  }
+
+  .report-footnote {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    margin: 0;
+    padding-top: 0.3rem;
+    background: #fff;
+  }
+
+  .report-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .report-counts {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}

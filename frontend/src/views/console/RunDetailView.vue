@@ -2,7 +2,7 @@
 import { Back, Tickets } from '@element-plus/icons-vue'
 import { ElButton, ElIcon, ElMessageBox } from 'element-plus'
 import { computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import ConsoleEmptyState from '@/components/console/ConsoleEmptyState.vue'
 import ConsolePageHeader from '@/components/console/ConsolePageHeader.vue'
@@ -34,6 +34,7 @@ const { t, locale } = useI18n()
 const { localize } = useLocalizedText()
 const store = useRunsStore()
 const route = useRoute()
+const router = useRouter()
 
 const runId = computed<string | null>(() => {
   const value = route.params.runId
@@ -87,7 +88,53 @@ const notFound = computed(
   () => runId.value === null || (detail.value === null && !store.loading),
 )
 
+/**
+ * Variables the run itself produced, from the successful Extract steps.
+ *
+ * The run history deliberately stores names, never values.  The extract step's
+ * evidence is the name it lifted, so this is the same fact the executor wrote
+ * without adding a second persistence path or exposing a value.
+ */
+const runtimeVariables = computed<readonly string[]>(() => {
+  const names = new Set<string>()
+
+  for (const scenario of detail.value?.scenarios ?? []) {
+    for (const step of scenario.steps) {
+      if (step.kind !== 'extract' || step.status !== 'passed') continue
+
+      for (const evidence of step.evidence) {
+        if (
+          'key' in evidence.label &&
+          evidence.label.key === 'console.runs.evidence.extracted' &&
+          evidence.value !== ''
+        ) {
+          names.add(evidence.value)
+        }
+      }
+    }
+  }
+
+  return [...names].sort()
+})
+
 const cancelling = computed(() => store.cancelling)
+
+/** A report is final only once the server says the run is finished. */
+const canReport = computed(
+  () => detail.value !== null && isTerminalRunStatus(detail.value.run.status),
+)
+
+const openReport = (): void => {
+  if (!canReport.value || runId.value === null) return
+
+  const projectId = route.params.projectId
+  if (typeof projectId !== 'string' || projectId === '') return
+
+  void router.push({
+    name: 'console-project-run-report',
+    params: { projectId, runId: runId.value },
+  })
+}
 
 /** Settled: passed, failed and cancelled are the three states nothing leaves. */
 const cancelDisabled = computed(
@@ -173,6 +220,15 @@ const cancelRun = async (): Promise<void> => {
         <template #actions>
           <RunStatusTag :status="detail.run.status" />
 
+          <ElButton
+            size="small"
+            :disabled="!canReport"
+            :title="canReport ? t('console.report.open') : t('console.report.unavailable')"
+            @click="openReport"
+          >
+            {{ t('console.report.open') }}
+          </ElButton>
+
           <ElButton size="small" :disabled="cancelDisabled" @click="cancelRun">
             {{ cancelling ? t('console.runs.cancelling') : t('console.runs.cancel') }}
           </ElButton>
@@ -181,6 +237,13 @@ const cancelRun = async (): Promise<void> => {
 
       <div class="flex flex-col gap-4">
         <!-- The stream is open on this run right now -->
+        <p
+          v-if="!canReport && detail !== null"
+          class="text-[11.5px] text-[var(--console-text-muted)]"
+        >
+          {{ t('console.report.unavailableBody') }}
+        </p>
+
         <p
           v-if="following"
           class="flex flex-wrap items-center gap-2 text-[11.5px] text-[var(--console-text-dim)]"
@@ -243,6 +306,23 @@ const cancelRun = async (): Promise<void> => {
                     : detail.run.variableKeys.join(', ')
                 }}
               </dd>
+              <p class="text-[10.5px] leading-4 text-[var(--console-text-muted)]">
+                {{ t('console.runs.variablesHint') }}
+              </p>
+            </div>
+
+            <div class="flex min-w-0 flex-col gap-0.5">
+              <dt class="console-label">{{ t('console.runs.runtimeVariables') }}</dt>
+              <dd class="truncate font-mono text-[12px] text-[var(--console-text-dim)]">
+                {{
+                  runtimeVariables.length === 0
+                    ? t('console.runs.noRuntimeVariables')
+                    : runtimeVariables.join(', ')
+                }}
+              </dd>
+              <p class="text-[10.5px] leading-4 text-[var(--console-text-muted)]">
+                {{ t('console.runs.runtimeVariablesHint') }}
+              </p>
             </div>
 
             <div class="flex min-w-0 flex-col gap-0.5">

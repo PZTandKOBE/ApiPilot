@@ -13,6 +13,7 @@ dependencies = [
     "greenlet>=3.0",
     "httpx>=0.28.1",
     "python-dotenv>=1.2.3",
+    "reportlab>=5.0.1",
     "sqlalchemy>=2.0.54",
     "uvicorn>=0.53.0",
 ]
@@ -30,5 +31,7 @@ build-backend = "uv_build"
 
 [dependency-groups]
 dev = [
+    "pymupdf>=1.28.2",
+    "pypdf>=6.21.1",
     "pytest>=9.1.1",
 ]

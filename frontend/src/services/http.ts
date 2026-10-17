@@ -179,3 +179,43 @@ export const request = async <T>(path: string, options: RequestOptions = {}): Pr
 
   return (await response.json()) as T
 }
+
+/**
+ * The same authenticated request, but the response is bytes rather than JSON.
+ *
+ * Reports are fetched as PDFs through this function so the guest session still
+ * travels in the header; a plain browser link to the API would not carry it.
+ */
+export const requestBlob = async (
+  path: string,
+  options: RequestOptions = {},
+): Promise<Blob> => {
+  const send = async (token: string | null): Promise<Response> => {
+    const hasBody = options.body !== undefined
+    const headers: Record<string, string> = {}
+
+    if (hasBody) headers['Content-Type'] = 'application/json'
+    if (token !== null) headers[SESSION_HEADER] = token
+
+    return await fetch(apiBaseUrl() + path, {
+      method: options.method ?? 'GET',
+      headers,
+      body: hasBody ? JSON.stringify(options.body) : undefined,
+      signal: options.signal,
+    })
+  }
+
+  const token = await ensureSession()
+  let response = await send(token)
+
+  if (response.status === 401) {
+    const replacement = await recoverSession()
+    response = await send(replacement)
+  }
+
+  if (!response.ok) {
+    throw await errorFrom(response)
+  }
+
+  return await response.blob()
+}

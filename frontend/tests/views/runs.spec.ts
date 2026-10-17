@@ -195,6 +195,14 @@ describe('run detail', () => {
     expect(has(html, 'Environment')).toBe(true)
     expect(has(html, 'Base URL')).toBe(true)
     expect(has(html, 'https://api.dev.example.com')).toBe(true)
+
+    // Initial variables and values the run produced are different facts. The
+    // historical bug was showing "none" for the former while an Extract in the
+    // run was already feeding the latter.
+    expect(has(html, 'Initial variables')).toBe(true)
+    expect(has(html, 'Runtime variables')).toBe(true)
+    expect(has(html, 'None produced by this run')).toBe(false)
+    expect(has(html, 'PDF report')).toBe(true)
   })
 
   it('renders the run its own url points at, not the one opened last', async () => {

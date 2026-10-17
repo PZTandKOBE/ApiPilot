@@ -534,8 +534,10 @@ export interface ConsoleMessageSchema {
       readonly subResourceAction: string
       /** `Extract {variable} from the response` */
       readonly extractVariable: string
+      readonly extractVariableFrom: string
       readonly callEndpoint: string
       readonly assertResponse: string
+      readonly assertRequestResponse: string
       readonly invalidBody: string
       readonly boundaryValue: string
       readonly unauthenticated: string
@@ -544,6 +546,8 @@ export interface ConsoleMessageSchema {
     readonly assertion: {
       readonly statusIs: string
       readonly fieldPresent: string
+      readonly fieldIs: string
+      readonly headerIs: string
       readonly resourceCreated: string
     }
 
@@ -622,6 +626,10 @@ export interface ConsoleMessageSchema {
     readonly environment: string
     readonly baseUrl: string
     readonly variables: string
+    readonly variablesHint: string
+    readonly runtimeVariables: string
+    readonly noRuntimeVariables: string
+    readonly runtimeVariablesHint: string
     readonly createdAt: string
     readonly finishedAt: string
     readonly duration: string
@@ -692,6 +700,90 @@ export interface ConsoleMessageSchema {
       /** A request step that names no endpoint cannot be executed. */
       readonly notExecutable: string
     }
+  }
+
+  /** C33: the printable report of one already-finished run. */
+  readonly report: {
+    readonly open: string
+    readonly title: string
+    readonly subtitle: string
+    readonly generatedAt: string
+    readonly runId: string
+    readonly project: string
+    readonly plan: string
+    readonly planId: string
+    readonly environment: string
+    readonly baseUrl: string
+    readonly status: string
+    readonly summary: string
+    readonly createdAt: string
+    readonly startedAt: string
+    readonly finishedAt: string
+    readonly duration: string
+
+    readonly scenarios: string
+    readonly steps: string
+    readonly assertions: string
+    readonly passed: string
+    readonly failed: string
+    readonly skipped: string
+    readonly passedSteps: string
+    readonly failedSteps: string
+    readonly skippedSteps: string
+    readonly passedAssertions: string
+    readonly failedAssertions: string
+    readonly skippedAssertions: string
+
+    readonly execution: string
+    readonly scenario: string
+    readonly assertion: string
+    readonly type: string
+    readonly description: string
+    readonly http: string
+    readonly target: string
+    readonly expected: string
+    readonly actual: string
+    readonly evidence: string
+    readonly error: string
+
+    readonly conclusion: string
+    readonly conclusionPassed: string
+    readonly conclusionFailed: string
+    readonly conclusionCancelled: string
+
+    readonly limitations: string
+    readonly limitationsBody: string
+    readonly noScenarios: string
+    readonly noAssertions: string
+    readonly noEvidence: string
+    readonly noActual: string
+
+    readonly print: string
+    readonly printHint: string
+    readonly pageNumbersHint: string
+    readonly back: string
+    readonly unavailable: string
+    readonly unavailableBody: string
+    readonly notFound: string
+    readonly notFoundBody: string
+    readonly generatedFromRun: string
+    readonly centerTitle: string
+    readonly centerSubtitle: string
+    readonly noReports: string
+    readonly noReportsHint: string
+    readonly openReport: string
+    readonly download: string
+    readonly saved: string
+    readonly savedHint: string
+    readonly openSaved: string
+    readonly generating: string
+    readonly generateAndSave: string
+    readonly loadFailed: string
+    readonly generateFailed: string
+    readonly notReady: string
+    readonly downloadFailed: string
+    readonly reportName: string
+    readonly runStatus: string
   }
 
   readonly common: {

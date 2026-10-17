@@ -88,6 +88,15 @@ export interface ApiEndpoint {
   /** From the operation's `summary`, else `description`, else derived. */
   readonly summary: LocalizedText
   readonly requiresAuth: boolean
+  /**
+   * Whether the document declares security for this operation, even when the
+   * declaration is the empty public list. Absent on older mocked documents.
+   */
+  readonly securityDeclared?: boolean
+  /** Scheme names the effective security requirement names. */
+  readonly securitySchemes?: readonly string[]
+  /** True when an empty requirement object allows anonymous access. */
+  readonly securityOptional?: boolean
   /** Path parameters, in declaration order: `orderId`. */
   readonly pathParams: readonly string[]
   /** Required request-body property names. */

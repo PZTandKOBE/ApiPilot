@@ -3820,3 +3820,305 @@ C30 的请求体生成、多请求断言响应绑定测试都包含在后端 115
 - 本节仅追加到 `docs/PROJECT_PROGRESS.md`，使用安全备份、manifest、临时文件、UTF-8/前缀/标题完整性校验和原子替换。
 - 仍未提交、未推送；C23–C31-R1 的全部未提交改动保留。
 - 当前 Git HEAD 与工作区状态以本轮交付报告现场核验为准。
+
+## 40. Task C32 — Agent 工作流质量：变量作用域、断言描述与 OpenAPI security（2026-10-17）
+
+**结论：代码与自动化测试完成；真实 UI 人工验收尚未执行。C32 尚未提交。**
+
+阶段 A 已在本轮先建立本地提交基线：`d338047 feat: complete API testing workflow and plan versioning`。C32 的全部改动位于该提交之后的工作区，未 push。
+
+### 40.1 目标
+
+只处理三个已观察问题：
+
+1. 跨步骤/跨场景运行时变量的作用域与 UI 解释。
+2. 断言与 Extract 的描述是否对应真实响应。
+3. OpenAPI security 声明是否能传到 planner，以及是否会对公共接口臆造认证场景。
+
+### 40.2 运行时变量作用域
+
+源码核实结果：
+
+- 每个 Run 创建一个 `RunExecutionContext`；`variables` 是启动时读取一次的 environment 映射，`runtime` 初始为空。
+- 同一个 context 传给所有 `_run_scenario()`；`extract` 成功写 `runtime[produces]`，后续步骤和同一 Run 的后续场景读取同一个字典。
+- 替换优先级是 runtime 高于 environment；这使 Extract 能覆盖用户初始值。
+- 缺失变量不会被替换成空串或原样发送：resolver 收集名字，步骤在发 HTTP 之前失败，错误码 `missing-runtime-variable`。
+- runtime 值只在进程内，不写 environment、不写 run 行、不进入事件 payload；Run 历史只保存名字。
+
+实际修改：
+
+- 前端 Run 详情把原来的“变量”拆成 Initial variables 与 Runtime variables；运行时变量名从成功的 `extract` 步骤 evidence 派生，不暴露值，并说明其作用域是整个 Run。
+- 没有重写已正确的 executor；没有新增 schema 列或 migration。
+- 新增真实多场景 executor 测试：第一个场景 Extract 的 `orderId` 被第二个场景的 GET 使用；新增缺失变量测试，断言失败且**一个 HTTP 请求都没有发出**。
+
+### 40.3 断言与 Extract 描述
+
+真实来源：
+
+- 模型路径原先从 design 的单个 `assert` 占位步骤取 `description`，再复用到该场景所有生成的 assert step；一个 scenario-level 句子因此同时描述 POST 与 GET。
+- 确定性路径的 assert step 也使用泛化的 `assertResponse`。
+- 模型 assertion 的 `description` 原先原样进入计划行。
+
+修复：
+
+- `arrange_assertion_steps()` 不再接收/复用 scenario-level assert description；每个 request 后的 assert step 用 `console.aiTest.step.assertRequestResponse`，参数为该 request 的 method/path。
+- Extract 使用 `console.aiTest.step.extractVariableFrom`，同时说明变量、来源 method 与 path。
+- assertion description 由 kind/target/expected 生成：`statusIs` / `fieldPresent` / `fieldIs` / `headerIs`；不再把模型的一句话描述直接写入计划行。
+- 不改 assertion target、expected、执行顺序、C30-M 多请求绑定或 run snapshot。
+- 后端新增确定性与模型设计两条路径的描述测试。
+
+### 40.4 OpenAPI security facts 与场景生成
+
+解析层新增并传递：
+
+- `securityDeclared`：operation 或 document 根部是否确实有 `security` 声明；operation 的空列表也算声明。
+- `securitySchemes`：有效 requirement 中出现的 scheme 名。
+- `securityOptional`：存在空 requirement `{}`，表示允许匿名访问。
+- `requiresAuth` 保留，但只在至少一个非空 requirement 且无匿名入口时为 true。
+
+语义：
+
+- operation 级 `security` 覆盖 root；`security: []` 是显式 public，不是继承。
+- 没有 security 声明与显式 public 可区分。
+- 这些字段进入 `specification_facts` 与 `understanding_facts`，模型必须原样回显，`domain_issues` 会比较。
+- 确定性 Planner 只在 token source + **受保护的** identity endpoint 同时存在时生成 authentication scenario；public/optional/未声明的 identity 不生成；public endpoint 仍只由 smoke 覆盖，不因存在 Extract 变量而臆造认证场景。
+
+限制：executor 没有 per-step credential override，本轮不新增“无凭证请求”执行能力；模型仍依据 facts 设计非确定性场景，未用字符串规则猜测/过滤模型场景。测试覆盖的是 facts 传递与确定性 Planner 的实际 scenario 生成。
+
+### 40.5 修改文件与测试
+
+主要修改：
+
+- `backend/src/backend/services/agent_plan.py`：security facts、canonical assertion/extract descriptions、per-request assert step、auth scenario guard。
+- `backend/src/backend/services/agent_analyzer.py`：facts 传递、模型 assertion description 规范化、模型 extract/assert 描述。
+- `backend/src/backend/schemas/agent.py`、`backend/src/backend/services/agent.py`：endpoint security 字段与响应映射。
+- `frontend/src/types/agent.ts`、`frontend/src/i18n/console-schema.ts`、两份 locale：security 字段与描述/变量文案。
+- `frontend/src/views/console/RunDetailView.vue`：Initial/Runtime variables。
+- 新增 `backend/tests/test_security_facts.py`、`backend/tests/test_plan_descriptions.py`；扩展 `backend/tests/test_run_execution.py`；扩展 `frontend/tests/views/runs.spec.ts`。
+
+本轮实测：
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| 三个 C32 后端专项文件 | 22 passed | 0 |
+| `pytest tests/`（全套） | 145 passed, 3 skipped | 0 |
+| `pnpm exec vitest run`（全套） | 24 files, 320 passed, 0 failed | 0 |
+| i18n + Run 详情专项 | 14 passed | 0 |
+| `vue-tsc -b --pretty false` | 退出 1；仅既有 `ConsoleLayout.vue:114` TS18047 | 1 |
+
+数据库：本轮完整后端测试使用隔离库；执行 `SELECT current_database();` 返回 `aiata_c4_test`。未连接开发库，未运行 migration，未创建真实 UI Run。
+
+### 40.6 文档
+
+- `docs/agent-pipeline-contract.md`：新增 4.4（security facts）、6.6（运行时变量作用域）、6.7（断言/提取描述）；4.2 的 endpoint 字段补 security 三项。
+- `docs/PROJECT_PROGRESS.md`：新增本节。
+- 均使用备份 → manifest → 临时文件 → UTF-8/标题/前缀/章节校验 → 原子替换；最终 hash 见交付报告。
+
+### 40.7 遗留
+
+- 真实 UI 人工验收尚未执行：变量显示、描述文案、认证/public 场景需用户在浏览器确认。
+- executor 没有 per-step credential override；无凭证测试不是本轮新增的可执行能力。
+- 模型仍可能设计不符合 facts 的场景；本轮仅提供 facts 与确定性规则，不声称模型场景已被强制过滤。
+- `CancelledError`、`ConsoleLayout.vue:114` 既有问题仍未处理。
+- PDF 报告仍留待 C32 之后。
+- C32 未提交、未 push。
+
+## 41. Task C33 — Run 详情 PDF 报告输出（2026-10-17）
+
+**结论：已完成可打印报告的前端实现与自动化测试；真实浏览器打印/保存 PDF 对话框尚未人工验收。C33 尚未提交。**
+
+### 41.1 实现选择
+
+- **不新增 PDF 库或字体文件。** 报告采用专用可打印页面，用户点击“打印 / 保存为 PDF”后使用浏览器打印对话框保存为 PDF；界面明确说明这不是自动下载。
+- 报告路由：`/console/projects/:projectId/runs/:runId/report`，入口位于已结束 Run 的详情页。
+- 数据只来自 Run detail API 的服务端持久化结果；不读取当前 live plan、当前 environment 或实时 API 响应，不重新执行 Run。
+- 版式使用 A4 print CSS、表格表头重复、行内分页禁止、长文本 wrap、系统中文栈（Microsoft YaHei / PingFang SC / Noto Sans CJK SC / SimSun），不引入授权不明的字体。
+- 页码优先由浏览器打印页眉/页脚提供；CSS 同时尝试 `@page` 的 `counter(page)`，但该能力依赖浏览器实现，不能声称所有浏览器都支持。
+
+### 41.2 用户交互
+
+- Run 详情页新增 “PDF report” 按钮。
+- 只有 `passed / failed / cancelled` 的 Run 可点击；`queued / running` 时按钮 disabled，并显示报告要等运行结束的说明。
+- 点击后进入报告预览页；页面提供 “Print / Save as PDF” 按钮，点击打开浏览器打印对话框。文件名通过页面标题设置为 `ApiPilot-Run-<safe-run-id>.pdf`。
+- 直接访问未结束 Run 的报告 URL 也显示不可用说明，不生成报告。
+
+### 41.3 报告内容与脱敏
+
+报告包含当前 Run detail 实际提供的数据：
+
+- 报告生成时间、Run ID、状态、项目 ID、计划名称/Plan ID、环境 ID、base URL。
+- 创建/开始/结束时间、耗时、已记录的变量数量（不输出变量名或值）。
+- 场景、步骤、断言总数，以及 passed/failed/skipped 统计。
+- 场景/步骤/断言描述、method/path、状态、耗时、失败摘要、证据（仅显示已保存的 label/value）。
+- 结论只根据服务端 Run 状态生成；没有推断未保存的原因。
+- 限制说明明确：请求/响应正文、headers、环境变量值、运行时变量值未保存在 Run 中，报告不包含它们；URL 查询参数值移除。
+
+脱敏使用 `frontend/src/utils/runReport.ts`：
+
+- 移除 URL 中的 userinfo 和**所有查询参数值**。
+- 移除 Bearer/Basic 凭证、JWT、API key 形态、Authorization/Cookie/token/password/secret 形式的字段值。
+- 字段/header 断言的 `actual` 不打印（可能是任意响应值）；status actual 才显示。
+- 报告不读取 `variableKeys` 的值，只显示数量。
+- 测试覆盖 token/password/authorization/cookie/环境值字符串不进入报告 projection。
+
+### 41.4 修改文件
+
+C33 相关：
+
+- 新增 `frontend/src/utils/runReport.ts`：报告 projection、脱敏、文件名、终态判断。
+- 新增 `frontend/src/views/console/RunReportView.vue`：报告预览/打印页面。
+- 新增 `frontend/src/styles/report.css`：A4 打印、分页、表头重复、CJK 字体、页脚。
+- 修改 `frontend/src/router/index.ts`：报告路由。
+- 修改 `frontend/src/views/console/RunDetailView.vue`：PDF 入口、终态禁用与说明（保留 C32 的 Initial/Runtime variables 改动）。
+- 修改 `frontend/src/components/console/ConsoleTopBar.vue` / `ConsoleSidebar.vue`：打印时隐藏应用壳。
+- 修改 `frontend/src/main.ts`：引入报告样式。
+- 修改 `frontend/src/i18n/console-schema.ts`、`frontend/src/locales/console/en-US.ts`、`zh-CN.ts`：报告文案。
+- 新增 `frontend/tests/report/runReport.spec.ts`：成功/失败/取消、无场景/无断言、长中文、脱敏、文件名、终态。
+- 新增 `frontend/tests/views/run-report.spec.ts`：报告渲染、历史数据、未结束拒绝、print CSS 静态检查。
+- 修改 `frontend/tests/views/runs.spec.ts`：Run 详情 PDF 入口断言。
+- 修改 `docs/PROJECT_PROGRESS.md`：本节。
+
+未修改后端代码、schema、migration、执行器、Run 状态机或 evidence 存储。
+
+### 41.5 测试结果
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pnpm exec vitest run tests/report/runReport.spec.ts tests/views/run-report.spec.ts tests/views/runs.spec.ts tests/i18n/keys.spec.ts` | 29 passed | 0 |
+| `pnpm exec vitest run`（前端全套） | 26 files, 335 passed, 0 failed | 0 |
+| `pytest tests/`（后端全套） | 145 passed, 3 skipped | 0 |
+| `pnpm exec vue-tsc -b --pretty false` | 退出 1；仅既有 `ConsoleLayout.vue(114,10) TS18047` | 1 |
+| `git diff --check` | 无空白错误 | 0 |
+
+数据库：后端全量测试连接前实际执行 `SELECT current_database();`，返回 `aiata_c4_test`；未连接开发库，未运行 migration。
+
+### 41.6 报告渲染检查
+
+- 采用 browser print，不是自动生成 PDF 字节，因此没有可用 PDF renderer 的“生成文件渲染”结果；不声称执行过该检查。
+- 已提供 print CSS 静态测试（`@media print`、`@page`、`counter(page)`、`table-header-group`、`break-inside: avoid`、CJK 字体栈、长文本 wrap）和报告组件 SSR 测试。
+- 真实中文分页、页码、表格跨页、裁切/重叠和打印对话框仍需用户在 Chrome/Edge 中人工验收。
+
+### 41.7 限制与遗留
+
+- 浏览器打印不是无提示一键下载；用户必须在打印对话框选择“另存为 PDF”。
+- 页码依赖浏览器打印页眉/页脚；CSS `@page` 页码能力不是所有浏览器都支持。
+- Run detail 不保存请求/响应正文、headers 或变量值，报告不能显示这些内容，也不补取。
+- Run 没有独立的 plan version 记录；报告显示 Run 已保存的 planName/planId，不推断版本号。
+- C32 未提交改动（包括 RunDetailView 的 Initial/Runtime variables）完整保留；C33 也未提交、未推送。
+- 既有 `ConsoleLayout.vue(114,10)` 类型错误仍未处理。
+
+## 42. Task C33-R1 — 持久化 PDF 报告与测试报告中心（2026-10-17）
+
+**结论：已完成真正的服务端 PDF 生成、数据库持久化、报告中心、在线查看和下载；自动化与 PDF 字节/渲染检查通过。真实浏览器打印对话框与完整 UI 流程仍需人工验收。C33-R1 未提交。**
+
+### 42.1 持久化方案
+
+- 后端新增 `run_reports` 表：项目、来源 Run、报告名称、安全文件名、content type、字节数、SHA-256、PDF 二进制内容和创建时间。
+- PDF 字节和元数据在同一个数据库事务中写入同一行；不存在“数据库成功但文件缺失”的路径。
+- 不使用文件系统路径或用户输入文件名：报告由 UUID 寻址，下载/查看均按 UUID + project 查询，因此没有路径遍历面。
+- 新增 migration `c33a1b2c3d4e`，只在实际确认 `aiata_c4_test` 后应用；未连接开发库，未修改历史 Run 结果。
+
+### 42.2 PDF 生成
+
+- 新增 `backend/src/backend/services/report_pdf.py`，使用 ReportLab 生成真实 PDF 字节。
+- 中文使用 ReportLab 内置 `STSong-Light` CID 字体，不向仓库添加字体文件。
+- A4 页面、页眉、页脚、`第 X / Y 页`、表格重复表头、长文本自动换行和跨页拆行；示例渲染为 2 页，中文和表格均可见。
+- 报告内容严格来自 `runs.get_run_detail()` 的已持久化 Run detail；不读取 live plan、当前 environment，不重新发请求。
+- 生成前检查 Run 终态；`queued/running` 返回 409 `report-not-ready`，不写记录。
+- 生成异常或 PDF 签名/大小不合法时返回 500，数据库不留下成功记录。
+
+### 42.3 API 路由
+
+- `POST /api/projects/{project_id}/runs/{run_id}/reports`：生成并保存报告。
+- `GET /api/projects/{project_id}/reports`：列出项目已保存报告（含 Run 状态、生成时间、字节数）。
+- `GET /api/projects/{project_id}/reports/{report_id}/file`：在线查看 PDF，`inline`。
+- `GET /api/projects/{project_id}/reports/{report_id}/download`：下载 PDF，`attachment`。
+- 全部走现有 guest/project 权限检查；跨项目报告查询返回 404。
+
+### 42.4 前端报告中心与生成入口
+
+- 激活原侧边栏“测试报告”入口，新增项目路由 `/console/projects/:projectId/reports`。
+- 新增 `ReportsView`：服务端报告列表、空状态、加载、错误、打开 PDF、下载、再次打印、Run 状态和生成时间。
+- 报告中心不扫描 Run 列表或 localStorage；唯一数据源是 `GET /reports`。
+- C33 的 `RunReportView` 保留预览和打印，并增加“生成并保存 PDF”：
+  - 成功后显示已保存提示和“打开已保存报告”；
+  - 报告可在报告中心看到；
+  - 原有打印 CSS/预览仍可使用。
+- 打开/下载通过带 guest header 的二进制请求获取 Blob，再交给浏览器 PDF 查看器或下载链接。
+- C32 的 Initial/Runtime variables 改动完整保留。
+
+### 42.5 脱敏与权限
+
+- 服务端 `report_pdf.redact_text` 与 C33 前端 projection 规则对应：URL userinfo/query、Bearer/Basic、JWT、API key、Authorization/Cookie/token/password/secret/value。
+- 变量只显示数量，不显示名称或值；字段/header assertion actual 不打印；仅 status actual 可显示。
+- PDF 元数据只含固定标题、作者、Run ID 等安全值。
+- 文件名由服务器生成 `ApiPilot-Run-<run-id>.pdf`；恶意 run id 也会被字符白名单清理。
+- 下载/查看路由使用 project-scoped 查询；服务测试验证另一项目无法读取报告。
+
+### 42.6 修改文件
+
+新增 C33-R1 后端：
+
+- `backend/src/backend/services/report_pdf.py`
+- `backend/src/backend/services/reports.py`
+- `backend/src/backend/schemas/report.py`
+- `backend/src/backend/api/routers/reports.py`
+- `backend/alembic/versions/c33a1b2c3d4e_create_run_reports.py`
+- `backend/tests/test_run_reports.py`
+
+修改 C33-R1 后端：
+
+- `backend/src/backend/app.py`
+- `backend/src/backend/db/models/result.py`
+- `backend/src/backend/db/models/__init__.py`
+- `backend/src/backend/api/errors.py`
+- `backend/src/backend/schemas/__init__.py`
+- `backend/pyproject.toml`、`backend/uv.lock`：新增 ReportLab；测试渲染使用 dev 依赖 PyMuPDF/PyPDF
+
+新增 C33-R1 前端：
+
+- `frontend/src/types/report.ts`
+- `frontend/src/services/api/reports.ts`
+- `frontend/src/stores/reports.ts`
+- `frontend/src/views/console/ReportsView.vue`
+- `frontend/tests/views/reports.spec.ts`
+
+修改 C33-R1 前端：
+
+- `frontend/src/services/http.ts`（authenticated blob request）
+- `frontend/src/views/console/RunReportView.vue`（生成/保存）
+- `frontend/src/router/index.ts`（reports route）
+- `frontend/src/i18n/console-schema.ts`、`frontend/src/locales/console/en-US.ts`、`zh-CN.ts`
+
+C33 原有文件共享修改：`frontend/src/utils/runReport.ts`、`frontend/src/styles/report.css`、`RunReportView.vue` 等仍保留；未覆盖 C32。
+
+### 42.7 测试与验证
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_run_reports.py` | 7 passed | 0 |
+| `pytest tests/`（后端全套） | 152 passed, 3 skipped | 0 |
+| `pnpm exec vitest run tests/report/runReport.spec.ts tests/views/run-report.spec.ts tests/views/reports.spec.ts tests/i18n/keys.spec.ts` | 24 passed | 0 |
+| `pnpm exec vitest run`（前端全套） | 27 files, 338 passed, 0 failed | 0 |
+| `pnpm exec vue-tsc -b --pretty false` | 退出 1；仅既有 `ConsoleLayout.vue(114,10) TS18047` | 1 |
+| `git diff --check` | 无空白错误 | 0 |
+
+PDF 检查：
+
+- `test_run_reports.py` 断言真实 PDF 以 `%PDF` 开头、非空、字节数与 SHA-256 正确、数据库中的字节与路由返回字节一致。
+- PyMuPDF 将代表性报告渲染为 2 页；人工查看页面图片确认中文、表格、页眉、页码和长文本分页可读，未见裁切或重叠。
+- 未运行浏览器 E2E；真实浏览器打印/下载对话框仍需人工验收。
+
+数据库：
+
+- 实际执行 `SELECT current_database();`，返回 `aiata_c4_test`。
+- 在该测试库应用 `c33a1b2c3d4e`；未连接 `ai_api_testing`，未在生产/开发库运行 migration。
+- 生产运行不硬编码测试库；数据库选择仍由现有配置。
+
+### 42.8 限制
+
+- 报告正文仍不包含未持久化的请求/响应正文、headers 或变量值。
+- Run 没有独立 plan version 字段；报告显示 Run 保存的 planName/planId，不推断版本号。
+- 报告中心暂不做搜索、分页、模板或批量导出。
+- “再次打印”打开已保存 PDF，由浏览器 PDF 查看器提供打印；不自动弹出打印对话框。
+- C32、C33 既有未提交改动保持原样；C33-R1 未提交、未推送。

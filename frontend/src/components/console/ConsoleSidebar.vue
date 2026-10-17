@@ -27,7 +27,7 @@ const { items, footerItems, activeKey } = useConsoleNav()
 
 <template>
   <aside
-    class="hidden shrink-0 flex-col border-r border-[var(--console-border)] bg-[var(--console-surface)] transition-[width] duration-200 ease-out lg:flex"
+    class="console-sidebar hidden shrink-0 flex-col border-r border-[var(--console-border)] bg-[var(--console-surface)] transition-[width] duration-200 ease-out lg:flex"
     :style="{
       width: ui.sidebarCollapsed
         ? 'var(--console-sidebar-w-collapsed)'

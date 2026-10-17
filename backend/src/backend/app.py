@@ -24,7 +24,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.api.errors import register_exception_handlers
-from backend.api.routers import agent, guest_sessions, projects, runs
+from backend.api.routers import agent, guest_sessions, projects, reports, runs
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +116,7 @@ def create_app() -> FastAPI:
     app.include_router(guest_sessions.router)
     app.include_router(projects.router)
     app.include_router(runs.router)
+    app.include_router(reports.router)
     app.include_router(agent.router)
 
     return app
