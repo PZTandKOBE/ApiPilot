@@ -1631,3 +1631,969 @@ C5-EVIDENCE events=['run.started', 'run.completed'] seqs=[1, 2] status=passed
 
 - **本节写入完成时的 SHA-256**：`2972E6C0C1A2A57F5A6E2E0709D95DD62D15C86DA06E49B33DDD7B7788455653`（该值仅表示写入完成时的状态，后续任何改写都会使其失效）。
 - **更新前 SHA-256**：`B4CDDA116486FCE568E9BDAF1721E9FD9E22A0A2C25FF40D3005E3B09964BC70`（129,222 字节，备份见 16.11）。
+
+---
+
+## 17. Task C15 — Phase 9.1：真实 DeepSeek Provider 成功路径与集成测试（2026-10-16）
+
+**结论：PASS（真实 Analyzer 与真实 Planner 均成功；产品源码零修改）**
+
+> **本轮真实调用与普通测试严格分开报告。** 第 17.3 节是**真实 DeepSeek 调用**的结果；
+> 第 17.5 节是**普通自动化测试**的结果；第 17.6 节是**历史结果**与**尚未验证**的内容。
+> 三者不得互相替代。
+
+### 17.1 本轮修改的文件
+
+| 文件 | 变更 | 目的 |
+|---|---|---|
+| `backend/tests/test_deepseek_provider.py` | **新增**（17,354 B，SHA-256 `3039925C1736C618…`） | 提供 9 项默认运行的失败路径测试 + 2 项默认跳过的真实 provider 集成测试 |
+| `docs/PROJECT_PROGRESS.md` | 追加本节 | 记录本轮证据 |
+
+**产品源码零修改**（逐个哈希复核，见 17.8）：`agent_analyzer.py`、`agent_plan.py`、`llm.py`、`agent.py`、`schemas/agent.py`、`schemas/run.py`、`app.py`、`run_executor.py`、`conftest.py`、`test_run_recovery*.py`、`pyproject.toml`、`uv.lock`、两份契约与 `backend/dosc/` 旧副本**全部未改动**。
+
+> **本轮没有需要修复的缺陷。** 真实 provider 成功路径**一次即通过**，未发现阻断性缺陷，因此未做任何源码修改（第 17.2 节的调用链在实测中直接工作）。
+
+### 17.2 真实调用链与模型职责（以当前源码为准）
+
+**Analyzer**：`agent_analyzer.selected_analyzer()` 读 `AGENT_ANALYZER`，**默认 `deepseek`**（`deterministic` 为备选）。`analyze()` → `analyze_with_model()` → `llm.complete_json()`，把 `AgentUnderstandingResponse` 的 JSON Schema 交给 provider 做**严格结构化输出**。
+
+**Planner**：`agent_analyzer.selected_planner()` 读 `AGENT_PLANNER`，**默认同样 `deepseek`**（注意：`agent_plan.py` 内没有任何模型调用，规划阶段的模型实现在 `agent_analyzer.py`）。`generate_plan_detailed()` 在 `deterministic` 时走规则引擎，否则走 `plan_with_model()` → 让模型产出 `PlanDesign`。
+
+**模型与运行时的职责分界（实测确认）**：
+
+| 由模型产出 | 由确定性代码产出 |
+|---|---|
+| 分析：依赖、风险、发现（dependencies / risks / findings） | 分析：**endpoints / resources / authentication 一律取自本地解析**，模型不能增删被测面（`to_understanding` 直接复制 `parsed`，并在 `domain_issues` 中拒绝与文档不符的答案） |
+| 规划：Scenario/Step/Assertion 的结构、描述、risk_level、endpoint 选择 | 规划：**id / index / status / source / 时间戳以及全部契约 key**（`PlanDesign` 里根本没有这些字段），由 `design_to_plan()` 派生 |
+
+**Provider 配置**：base URL 默认 `https://api.deepseek.com`，路径 `/responses`；模型默认 `deepseek-flash`；`DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`/`DEEPSEEK_MODEL` 三个环境变量；超时与错误经 `LLMError` 家族（`LLMUnavailable`/`LLMProtocolError`/`LLMOutputInvalid`），detail 经 `_redact()` 脱敏。
+
+**审批边界**：`PlanDesign` 无 `status`/`id`/`approved_at` 字段，模型**结构上无法**交回一份已批准的计划；实测生成结果的 `status` 为 `draft`。
+
+### 17.3 真实 DeepSeek 调用结果（本轮实测，非 stub）
+
+**Provider 与模型**：`https://api.deepseek.com` / **`deepseek-flash`**（真实 provider，无 mock、无 stub）。**未输出任何凭证**。
+
+| # | 调用 | 发起真实模型请求 | 成功 | 结构校验 | 结果 | 耗时 | token |
+|---|---|---|---|---|---|---|---|
+| 1 | Analyzer（`scripts/verify_deepseek_analyze.py`） | ✅ | ✅ | ✅ schema + 领域双层 | 3 endpoints / 3 resources / 2 dependencies / 7 risks / 5 findings | 16.4s | 未报告 |
+| 2 | Planner（`scripts/verify_deepseek_generate_plan.py`） | ✅ | ✅ | ✅ 契约校验 PASS | 3 scenarios / 11 steps / 7 assertions，`status=draft` | 12.7s | input 3,848 / output 2,200 / total **6,048** |
+| 3 | Analyzer（pytest 集成测试） | ✅ | ✅ | ✅ | 断言通过（未虚构 endpoint） | 见 #3+#4 合计 | 未报告 |
+| 4 | Planner（pytest 集成测试） | ✅ | ✅ | ✅ `plan_design_issues == []` | 断言通过，`status == draft` | **79.31s（#3+#4）** | 未报告 |
+
+**调用次数**：本轮共 **4 次**真实模型请求（2 次手动探针 + 2 次 pytest 集成测试）。**token 用量仅在调用 #2 可观察**（脚本自行打印 usage）；其余三次 provider 未回传或未被采集，**如实记为不可观察**。
+
+**不能仅凭 HTTP 200 判定成功的证据**：分析结果通过了 Pydantic `extra="forbid"` schema 与领域层（端点必须在文档中、risk 类别受限、依赖两端存在）；计划结果通过了契约校验（key、index、target、变量来源）并由测试独立复核 `plan_design_issues == []`。
+
+### 17.4 新集成测试如何开启、如何避免默认调用真实 API
+
+文件：`backend/tests/test_deepseek_provider.py`（**不需要数据库**，因此未连接任何数据库）。
+
+- **默认关闭**：两项 live 测试用 `pytest.mark.skipif` 守卫，条件是 `RUN_DEEPSEEK_INTEGRATION` 不属于 `1/true/yes`，或 `DEEPSEEK_API_KEY` 缺失。默认运行时的 skip 原因原文为：`live provider tests are opt-in: set RUN_DEEPSEEK_INTEGRATION=1 to spend a real call`。
+- **显式开启**：`$env:RUN_DEEPSEEK_INTEGRATION=1` 后才执行；实测开启后两项 PASS。
+- **9 项失败路径测试默认运行且不联网**：用 `httpx.MockTransport` 驱动**真实客户端**，覆盖 provider 500、401、非 JSON 响应、`status=incomplete` 的半截答案、读超时，以及"格式合法但事实不成立"的答案被领域层拒绝（该 payload 先经 `model_validate` 证明**能通过 schema**，再被 `domain_issues` 以 5 条 issue 拒绝）。
+- 另有两项结构性测试：无 key 时 `build_client()` 抛 `LLMError`（而不是返回空分析）；`PlanDesign` 不含 `status`/`id`/`approved_at`。
+- 断言只针对**结构与来源**（数量、契约字段、端点必须存在于文档、`status=draft`），**不断言自然语言措辞**。
+
+### 17.5 普通自动化测试结果（本轮，与真实调用分开）
+
+| 运行 | 摘要 | 退出码 |
+|---|---|---|
+| 新文件默认模式 | `9 passed, 2 skipped in 0.50s` | 0 |
+| 全套 第 1 次 | `36 passed, 2 skipped in 9.90s` | 0 |
+| 全套 第 2 次 | `36 passed, 2 skipped in 9.70s` | 0 |
+| 全套 第 3 次 | `36 passed, 2 skipped in 9.67s` | 0 |
+| 新文件开启 gate | `2 passed, 9 deselected in 79.31s` | 0 |
+
+收集项由 27 增至 **38**（新增 11 项）。**默认运行的 36 项没有任何真实 DeepSeek 依赖**；2 项 skip 的 skip 原因明确指向 opt-in 开关。Run 恢复专项 25 项**无回归**。
+
+### 17.6 历史结果与尚未验证的内容（不得与前两节混同）
+
+**历史结果**：Run 恢复专项 `27 passed`（Task C10，连续三次，未在本轮重跑）；本轮全套的 36/38 是**当前**结果。
+
+**尚未实现 / 未验证**：
+
+1. **完整浏览器闭环**仍未验收（OpenAPI → Agent → 计划批准 → Run → 结果）。
+2. **持久化未在本轮验证**：`plan_with_model` 的产出直接返回，本轮**未**走"落库为 `draft` 计划"的路径（那需要数据库）。
+3. **`schema` 断言类型**仍未实现（执行器会跳过）。
+4. **跨进程/多 worker** 场景未覆盖（见 C11/C12 记录）。
+5. **真实模型的稳定性**：本轮 4 次调用均成功，但单次延迟 12.7–79s（含网络与重试不可控因素），**未做失败重试或速率限制验证**。
+
+### 17.7 数据库、网络、凭证与 Git 副作用
+
+- **数据库：零连接**。新测试文件不需要数据库；本轮未执行 Alembic、未建库、未改 schema。
+- **网络：仅 4 次 DeepSeek API 请求**（provider 官方端点），无其他外部请求。
+- **凭证**：`.env` 未被修改（mtime 仍为 2026-10-08 16:15:57，SHA-256 `0B2474562CCCB6AA…` 未变）；**未打印、未复制、未提交**任何密钥；测试与日志只输出模型标识与用量。
+- **依赖**：未新增、未升级。
+- **Git**：未执行 `add`/`commit`/`push`/`reset`/`clean`/`stash`；未修改远程或配置；未处理 7 个脚本的索引假阳性。新增文件处于未跟踪状态，留待负责人审核。
+
+### 17.8 保护文件哈希复核（本轮结束时实际值）
+
+| 文件 | SHA-256（前 16） | 结论 |
+|---|---|---|
+| `app.py` | `305850D8D42A066E` | 未变 |
+| `run_executor.py` | `17E1ED00C1A0C3D7` | 未变 |
+| `agent_analyzer.py` | `912FBF07257C5CBC` | 未变（mtime 10-08） |
+| `agent_plan.py` | `D4EE99E33CE1955A` | 未变（mtime 10-08） |
+| `llm.py` | `320931FDE688A079` | 未变（mtime 10-08） |
+| `schemas/agent.py` | `E1CCFF79CA1515C1` | 未变 |
+| `docs/agent-pipeline-contract.md` | `101386DE0002EEAC` | 未变（= C12 提交值） |
+| `docs/identity-access-contract.md` | `5CF62B99D469F9D1` | 未变（§6/§8 仍未变） |
+| `backend/dosc/agent-pipeline-contract.md` | `715DACD8CA9F4CDD` | 未变 |
+
+### 17.9 备份与哈希
+
+- **文档更新前备份**：`D:\_aiapi_progress_backup_20261016-123800\`（含 `MANIFEST.txt`），与源文件 `IDENTICAL=True`、`SHA_MATCH=True`。
+- **新测试文件快照**：`D:\_aiapi_c15_backup_20261016-123800\test_deepseek_provider.py`（`identical=True`）。
+- **更新前 SHA-256**：`290363856330F4E3DCCFBCED578FBDAF66EB3B062279D08E1A3B0092B8C1111A`（142,600 字节）。
+- **更新后 SHA-256**：见 17.10。
+- **写入流程**：项目外备份 → 校验逐字节一致 → 同卷临时文件追加 → 读回复核 → 结构检查（UTF-8 无 BOM / 顶层编号连续 / 围栏 / 历史标记）→ `os.replace` 原子替换 → 复算哈希。
+
+### 17.10 进度文档最终状态（本节写入后核验）
+
+- **本节写入完成时的 SHA-256**：`448ABDE4B98D0197B2C11D5E2525027E143E0B9211610A1B94D6CD55B308F0C4`（仅表示写入完成时的状态）。
+- **更新前 SHA-256**：`290363856330F4E3DCCFBCED578FBDAF66EB3B062279D08E1A3B0092B8C1111A`（142,600 字节）。
+
+### 17.11 下一阶段最值得推进的单一事项
+
+**Phase 9.2 建议：把"真实模型产出 → 落库为 `draft` 计划 → 审批闸门拒绝未批准计划"这一段用隔离 scratch 库（`aiata_c4_test`）跑通，并复用它作为计划持久化回归。**
+
+理由：本轮已证明两个模型阶段各自成立，但**模型产出进入数据库并受审批闸门约束**这一段仍未验证（17.6 第 2 条）。它与现有 `verify_agent_*.py` 的 stub 路径互补，且不需要新 schema。
+依赖：① 需要数据库，必须使用已确认的 `aiata_c4_test`，严禁连接开发库；② 计划审批边界属冻结契约，只验证不修改；③ 真实模型调用仍须 opt-in。
+
+---
+
+## 18. Task C16 — Phase 9.2：Agent 产物持久化与审批边界集成验证（2026-10-16）
+
+**结论：PASS（真实模型产出经真实持久化路径落库并可读回；未批准计划被现有闸门拒绝；产品源码零修改）**
+
+> **三种状态严格区分**：18.3 是"模型生成计划"、18.4 是"计划已持久化为数据库行"、18.5 是"持久化后仍为 draft 且被拒绝执行"。
+> **task 创建成功不等于计划持久化完成**，本节不把两者混同。
+
+### 18.1 本轮修改的文件
+
+| 文件 | 变更 | 目的 |
+|---|---|---|
+| backend/tests/test_agent_persistence.py | **新增**（22,824 B，SHA-256 85C4EF36722A1732…） | 10 项默认运行的持久化与闸门测试 + 1 项 opt-in 真实模型 E2E |
+| docs/PROJECT_PROGRESS.md | 追加本节 | 记录本轮证据 |
+
+**产品源码零修改**：agent.py、agent_analyzer.py、agent_plan.py、llm.py、app.py、run_executor.py、conftest.py、pyproject.toml、uv.lock、两份契约、backend/dosc 旧副本**逐个哈希复核全部未变**。**未新增迁移、未改 schema、未改冻结契约。**
+
+### 18.2 持久化前后的真实业务调用链
+
+本轮走的是**产品自己的**函数（HTTP 路由 POST /api/projects/{id}/agent/tasks 所调用的同一批），不是平行实现：
+
+1. **agent.start_task()** —— 路由调用的同一个函数；
+2. → **create_task()**：校验 project/spec 身份、_get_or_create_spec() 落 api_specs、冲突规则（同 slug 已有计划则 409）、写 agent_tasks(pending) 与 agent_task_audits，**并 commit**；
+3. → **process_task()**：pending → analyzing，_generate() **从 api_specs.content 重新读回文档**再解析（不是携带内存对象）；
+4. → **agent_analyzer.analyze_detailed()** → 规则引擎或 plan_with_model()（本轮默认走规则引擎，见 18.6）；
+5. → **agent_plan.validate_plan()** 契约校验；
+6. → **_persist() → runs._create_plan_tree()**：**四张 plan 表唯一的写入者**（Run 创建路径也用它），并写 agent_task_id 建立来源关系；
+7. → 状态置 completed 并 commit；随后 **_response() 用 _PLAN_* 查询从数据库读回**计划树构建响应。
+
+**关键点**：响应本身就是"从数据库读回"的产物（agent.py 注释原文："the plan comes back out of the database"），所以测试断言的是**存储状态**，不是内存对象。
+
+### 18.3 实际写入的数据库实体，以及从哪个数据库确认
+
+**写入前身份核验**（在任何写入之前执行）：
+
+| 检查 | 结果 |
+|---|---|
+| 配置解析出的库名 | aiata_c4_test |
+| **实际 SELECT current_database()** | **aiata_c4_test** ✅ |
+| alembic_version | a4c1e8b27d93（与历史基线一致） |
+| public 表数 | 24 |
+| 写入前的 plan/task/run 行数 | **0**（库为空，无既有数据可被覆盖） |
+| host/port | 127.0.0.1:5432（未连接开发库） |
+
+**本轮实际写入的表**：guest_sessions、projects、api_specs、agent_tasks、agent_task_audits、test_plans、test_scenarios、test_steps、test_assertions。
+**未写入**：test_runs、run_scenarios、run_steps、run_assertions、run_events（由 18.5 的计数断言证明）。
+
+**清理**：新增文件自带 _drop_agent_rows()，按 task id 逐层向下删除（assertion/step → scenario → plan → audit → task），再由共享夹具删除 spec/project/guest。**跑完整套后实测全部为 0 行**：
+
+```text
+agent_tasks=0 audits=0 test_plans=0 scenarios=0 steps=0 assertions=0 specs=0
+projects=0 guests=0 test_runs=0 run_events=0 run_scenarios=0
+```
+
+（如实记录：首次运行时本文件曾因共享夹具不认识 pipeline 新建的 agent_tasks 而 teardown 失败；**已定位并修复**为上述按 id 定向清理，该次遗留的行已用同范围 SQL 清除，库恢复为 0 行。）
+
+### 18.4 draft 状态从生成到持久化、读取后的真实证据
+
+| 环节 | 证据 |
+|---|---|
+| 生成时 | agent_plan.generate_plan() 源码中**字面写着** status="draft"（测试用 inspect.getsource 断言该字面量仍在）；模型侧 PlanDesign **根本没有 status 字段** |
+| 落库时 | test_plans.status 列写入 plan.status；模型 E2E 中实测为 draft |
+| 读回后 | _response() 从 test_plans 读回：plan.status == "draft"、approved_at is None、rejected_at is None |
+| 二次读取 | 用**另一个 session** 直接查列：status=draft、approved_at IS NULL；再经 agent.get_task() 读一次，仍为 draft |
+| JSONB 不变形 | Scenario/Step/Assertion 的 key、sort_order/index、kind/step_type 与契约逐项相等 |
+
+### 18.5 未批准计划如何被拒绝、发生在哪个边界、如何证明没有执行副作用
+
+**拒绝位置**：services/runs.py 的 _check_approval(plan) —— Run 创建入口 POST /api/projects/{id}/runs 所调用的服务层函数。规则是**白名单**：只有 plan.status == "approved" 通过，否则抛 AppError(409, code="not-approved", details={status: ...})。
+
+**实测**：draft / rejected / in_review 三种状态**全部被拒绝**（409 + not-approved + details 携带实际状态）；approved 通过（证明不是无差别拒绝）。
+
+**"拒绝发生在写库之前"的证据**：_check_approval 的签名**只有 plan 一个参数，没有 session**（测试用 inspect.signature 断言），结构上无法写库；且 runs.create_run 中该调用位于任何数据库操作之前。
+
+**"没有执行副作用"的证据**：用**前后计数**比对 test_runs（after == before）；真实模型 E2E 中同样断言 test_runs 为空。全套跑完后 test_runs / run_events / run_scenarios 均为 **0**。
+
+**必须如实记录的能力边界（冻结架构使然，本轮未改）**：
+
+- **审批权威在客户端**。PlanPayload.status 来自请求体，服务端只"复核客户端会拒绝的东西"（runs.py 注释原文："The approval check is not an authority … There is no Plan Approval API"）。因此**数据库里的 draft 行并不能独立阻止执行**：直接调用后端的客户端只要在请求体里声明 status="approved"，就会通过这道闸门。
+- 这不是本轮引入的缺陷，而是**冻结契约的设计边界**（docs/agent-pipeline-contract.md 记载"审批是客户端写 localStorage"）。本轮**未擅自改动审批权威**，只验证现有机制。
+- 因此准确表述是：**"以 draft 提交的计划无法进入执行流程"已被证明**；**"数据库中的 draft 状态能否独立阻止执行"未被证明，且在当前架构下不成立**。
+
+### 18.6 普通测试与真实模型 E2E 测试的独立结果
+
+**普通自动化测试（默认，不联网、不花钱）**：
+
+| 运行 | 摘要 | 退出码 |
+|---|---|---|
+| 新增文件单独 | 10 passed, 1 skipped in 1.60s | 0 |
+| 全套 第 1 次 | 46 passed, 3 skipped in 10.41s | 0 |
+| 全套 第 2 次 | 46 passed, 3 skipped in 10.28s | 0 |
+| 全套 第 3 次 | 46 passed, 3 skipped in 10.29s | 0 |
+| 警告 | **0 条**（PytestCollectionWarning 已通过给模型类起别名消除） | — |
+
+收集项 38 → **49**。默认运行的 46 项**不发起任何真实模型请求**。
+
+**关键设计**：默认测试之所以能覆盖完整持久化链路而不花钱，是因为 AGENT_ANALYZER / AGENT_PLANNER 都支持**产品自带的 deterministic 规则引擎**——这是产品功能而非测试替身，因此默认测试是"除两次模型调用之外"的真实集成测试。
+
+**真实模型 E2E（opt-in，本轮执行 1 次）**：1 passed, 10 deselected in 51.01s（exit 0）。开启条件：RUN_AGENT_DB_E2E=1 **且** RUN_DEEPSEEK_INTEGRATION=1 **且** DEEPSEEK_API_KEY 已配置；三者缺一时 skip 原因明确写出所需开关。该测试走过：真实 DeepSeek 分析 → 真实 DeepSeek 规划 → _persist 落库 → 数据库读回 → 断言 status=draft、有 scenario、有 assertion → 闸门以 not-approved 拒绝 → 断言无 run 行。
+
+### 18.7 API 调用次数与 token
+
+- 本轮真实模型调用：**2 次**（analyzer 1 次 + planner 1 次），全部在 **1 个** opt-in 测试内完成。
+- **token 用量不可观察**：经 pytest 运行时未采集 provider 的 usage（该信息只在直连脚本中打印）。**如实记为不可观察**，不做估算。
+- 未调用真实浏览器 E2E、未调用目标 API、无其他外部 HTTP。
+
+### 18.8 修改文件清单与 diff 摘要
+
+- 新增：backend/tests/test_agent_persistence.py（22,824 B；11 个测试项 = 10 默认 + 1 opt-in）。
+- 修改：docs/PROJECT_PROGRESS.md（仅安全追加本节）。
+- git diff --check：**0**（无空白错误）。
+- **schema 变更：无。契约变更：无。依赖变更：无。**
+
+### 18.9 备份与哈希
+
+- **文档更新前备份**：`D:\_aiapi_progress_backup_20261016-125533\`（含 MANIFEST.txt），IDENTICAL=True。
+- **新测试文件快照**：`D:\_aiapi_c16_backup_20261016-125533\test_agent_persistence.py`（identical=True）。
+- **更新前 SHA-256**：EC68714B2D85762A2E10C7AE21548F006BCCD3C9BC759E40F8C08FA4A30273C6（153,395 字节）。
+- **更新后 SHA-256**：见 18.10。
+
+### 18.10 进度文档最终状态（本节写入后核验）
+
+- **本节写入完成时的 SHA-256**：56FAEF6080DF6F85C770CF30D0573CF47469750992EE61948181B4374DC84077（仅表示写入完成时的状态）。
+- **更新前 SHA-256**：EC68714B2D85762A2E10C7AE21548F006BCCD3C9BC759E40F8C08FA4A30273C6（153,395 字节）。
+
+### 18.11 遗留问题
+
+1. **审批权威仍在客户端**（见 18.5）：后端无法独立阻止一个自称 approved 的计划。改为服务端权威需要新的审批 API 与持久化批准状态，**属契约变更，需单独授权**。
+2. **"计划 → Run 快照"的完整链路未在本轮验证**：Run 创建会把计划展开为 run_* 行，本轮只验证了闸门拒绝，未验证批准后成功创建 Run。
+3. **test_steps.config 的 method/path 回读**未在本轮断言（属 Run 创建路径的读取逻辑）。
+4. **真实模型输出仍非确定性**：本轮 E2E 生成的 scenario/assertion 数量与 C15 探针不同，属预期；测试只断言结构，不断言数量。
+5. 完整浏览器闭环（OpenAPI → Agent → 批准 → Run → 结果）仍未验收。
+
+### 18.12 下一阶段建议（仅建议，未执行）
+
+**Phase 9.3 建议：验证"已批准计划 → Run 创建 → run_* 快照 → 事件流"这一段。**
+
+理由：本轮证明了模型产出能正确落库、且未批准计划被拒绝；**尚未证明的是批准之后能否正确展开为 Run 快照**（runs._create_plan_tree 的读回半边、run_steps.config 的 method/path 还原、事件 seq 稠密性）。该段完全确定性、无需真实模型，可在 aiata_c4_test 内完成。
+依赖：① 仅用 aiata_c4_test；② 不得改动 Run 事件冻结集合与 seq 机制；③ 不改审批权威。
+
+---
+
+## 19. Task C17 — Phase 9.3：已批准计划 → Run 快照 → 执行与事件流验证（2026-10-16）
+
+**结论：PASS（Run 创建、快照、真实执行器执行、事件持久化、事件读回五项均已分别验证；产品源码零修改）**
+
+> **五项必须分开陈述**（本轮全部独立验证，任一项不得由其余项自动推定）：
+> 19.3 Run 创建成功 ｜ 19.4 Run 快照正确 ｜ 19.5 执行器实际执行成功 ｜ 19.6 事件成功持久化 ｜ 19.7 事件可经正式读取路径返回。
+
+### 19.1 本轮修改的文件
+
+| 文件 | 变更 | 目的 |
+|---|---|---|
+| backend/tests/test_run_execution.py | **新增**（27,365 B，SHA-256 BCAD117D9B1AB45B…） | 8 项确定性 Run 闭环测试 |
+| docs/PROJECT_PROGRESS.md | 追加本节 | 记录本轮证据 |
+
+**产品源码零修改**：app.py、run_executor.py、runs.py、agent.py、conftest.py、pyproject.toml、uv.lock、两份契约、backend/dosc 旧副本**逐个哈希复核全部未变**（见 19.10）。**未新增 schema、未新增 migration、未改冻结事件集合、未改 seq 规则、未改审批权威。**
+
+### 19.2 Run 创建的实际 service 调用链
+
+本轮走产品自身函数（HTTP 路由 POST /api/projects/{id}/runs 所调用的同一批）：
+
+1. **runs.create_run(session, project_id, payload)** —— 路由调用的同一函数；
+2. → **runs._check_approval(plan)**：白名单校验，仅 status == "approved" 通过（否则 409 not-approved）；
+3. → **_check_identity / _check_spec_identity / _check_lengths**：五处身份必须一致、slug 必须由文档重算得到、所有 id 与长度必须落列；
+4. → **_lookup_project / _lookup_environment**：环境必须属于该项目；
+5. → **_get_or_create_spec**：落 api_specs；
+6. → **_get_or_create_plan → runs._create_plan_tree**：四张 plan 表**唯一写入者**（与 C16 的 agent 路径共用）；
+7. → **写 test_runs**（status=queued，plan_name 冻结副本，base_url）；
+8. → **_insert_run_tree**：把计划展开为 run_scenarios / run_steps / run_assertions 快照；
+9. → commit，**最后调用 run_executor.schedule_run**（测试中替换为 no-op，以便先观察 queued 快照）。
+
+**测试内的执行驱动**：直接 await **run_executor.execute_run(run_id)**（公开入口，内部 await _execute），不经过 asyncio.create_task，因此不存在后台任务泄漏。
+
+### 19.3 Run 创建成功
+
+实测：创建后 test_runs 行为 status="queued"、started_at IS NULL、base_url 与请求一致、plan_name 为计划名冻结副本。**未执行前即可读回**（说明创建与执行是两个可分别观察的阶段）。
+
+### 19.4 Run 快照各表的记录数量与内容（快照正确）
+
+计划设计：**1 个 Scenario、4 个 Step、1 个 Assertion**。实测快照：
+
+| 表 | 行数 | 关键字段实测 |
+|---|---|---|
+| run_scenarios | 1 | scenario_key=scenario_c17_orders，sort_order=0，status=pending |
+| run_steps | 4 | 顺序与计划一致（见下），status 全为 pending |
+| run_assertions | 1 | assertion_key=assertion_c17_status，type=status，target=status，expected_value="201"（**以字符串存储**），status=**skipped**（未执行的断言既非 passed 也非 failed） |
+
+快照的 Step 顺序与类型实测：
+
+```text
+0 step_c17_read      request  GET   /orders/order_1
+1 step_c17_extract   extract  None  None
+2 step_c17_create    request  POST  /orders?for={{orderId}}
+3 step_c17_assert    assert   None  None
+```
+
+**来源关系（快照与计划的关联）**：run_scenarios.source_scenario_id 指回 test_scenarios.id；四个 run_steps.source_step_id 逐个指回对应 test_steps.id。同一计划同时落库为四张 plan 表，状态为 approved（本轮提交的就是 approved 计划）。
+
+### 19.5 method/path 从计划到执行的实际传递证据（C16 遗留项，本轮补齐）
+
+C16 指出 test_steps.config 与 Run 快照之间的 method/path 读回尚未断言。本轮把**四个位置**在同一次测试内串起来断言：
+
+| 位置 | 存储形态 | 实测值 |
+|---|---|---|
+| (a) 原始计划提交的 Step（PlanStep.method/path） | 请求体字段 | GET /orders/order_1；POST /orders?for={{orderId}} |
+| (b) 持久化后的计划侧（test_steps.config，该表无 method/path 列） | JSONB | read: {"method": "GET", "path": "/orders/order_1"}；create: {"method": "POST", "path": "/orders?for={{orderId}}"}；**extract 与 assert 均为 {}** |
+| (c) run_steps 快照列 | method/path 独立列 | ("GET", "/orders/order_1")、("POST", "/orders?for={{orderId}}")、非请求步为 (None, None) |
+| (d) 执行器实际发出的请求 | httpx.Request | **GET http://127.0.0.1:9/orders/order_1**；**POST http://127.0.0.1:9/orders?for=order_1** |
+
+**大小写规范化与串位**：提交的 method 为 "GET"/"POST"（与 HttpMethod 枚举一致），快照与发出的请求逐字相同；四个 Step 的顺序、类型与配置在快照与执行两侧均未串位（(d) 两笔请求的顺序与 (c) 的前两个 request 步一一对应）。
+
+**变量替换的真实语法（本轮实测确认）**：执行器按 **{{name}}** 双花括号替换（resolve_variables）。测试最初写成单花括号 {orderId}，被执行器**原样发出**为 for={orderId} —— 这是本轮在源码语义上的一次自我纠正，记录于此以免后人重复。
+
+**执行器读取位置**：run_executor._load_tree 只从 **run_steps.method / run_steps.path** 读取目标（不读 test_steps），因此快照即执行输入，符合"快照冻结"的设计。
+
+### 19.6 真实后端执行器执行了哪些 Step（执行成功）
+
+执行器**未被替换**：本文件只把 httpx.AsyncClient 换成携带 httpx.MockTransport 的子类（与 test_run_recovery.py 既有约定一致），状态机、变量解析、断言求值、证据、事件写入、结算全部是生产代码。
+
+**一次完整成功运行的实测结果**：
+
+- Run：**passed**，error_code=None，started_at 与 finished_at 均已写入且 finished_at >= started_at；
+- Scenario：passed；
+- 四个 Step 全部 passed（request / extract / request / assert）；
+- Assertion：expected=201，**actual=201**，status=passed；
+- **实际发出的请求（按顺序）**：GET http://127.0.0.1:9/orders/order_1，然后 POST http://127.0.0.1:9/orders?for=order_1；
+- **提取步骤确实供给了下一步**：for=order_1 中的 order_1 来自第一个响应的 orderId 字段（该值不在提交的计划里，只存在于运行时上下文）；
+- 执行结束后 run_id **不在** run_executor._RUNNING_TASKS 中（无任务泄漏）。
+
+### 19.7 事件名称、seq、顺序、最终状态（事件持久化）
+
+**成功运行的完整事件流（实测 11 条，由 append_run_event 写入）**：
+
+```text
+seq=1   run.started
+seq=2   step.started
+seq=3   step.completed
+seq=4   step.started
+seq=5   step.completed
+seq=6   step.started
+seq=7   step.completed
+seq=8   step.started
+seq=9   assertion.completed
+seq=10  step.completed
+seq=11  run.completed
+```
+
+**逐项核对**：
+
+| 要求 | 实测 |
+|---|---|
+| 每个事件 run_id 正确 | 全部等于该 run |
+| seq 由现有机制产生且不重复 | seq == 1..11 连续稠密，无重号缺号 |
+| 无冻结集以外的事件类型 | 只出现 run.started / step.started / step.completed / assertion.completed / run.completed（均在冻结的 8 类内）；**未新增 run.created 或 run.finished** |
+| 顺序符合执行器行为 | run.started 首、run.completed 尾；每个 step.started 之后紧跟该步的 settled 事件；assert 步的 assertion.completed 落在其 step.completed 之前 |
+| 最终状态与真实结果一致 | Run=passed 且 events 末尾为 run.completed（非 run.failed） |
+| 事件数量非预先写死 | 断言基于本次实际执行路径：4 个 Step 各一对 started/settled + 1 个 assertion.completed + run 首尾 = 11 |
+
+**失败路径（第二个用例）**：把断言 expected 改为 200（接口实际答 201）后，Run=failed、Scenario=failed、Assertion=failed 且 actual_value=201、事件末尾为 **run.failed** 且不含 run.completed，seq 仍连续。
+
+### 19.8 事件读取接口是否实际验证
+
+**已通过现有读取路径验证，但须精确说明验证到哪一层**：
+
+- 数据库层：直接读 run_events 得 11 条（19.7）；
+- **服务层**：调用 **runs.get_run_events(session, run_id, from_seq=1)** —— 这正是路由 GET /api/runs/{run_id}/events 所调用的函数 —— 返回 **11 条**，其 seq、event_type、payload 与数据库记录**逐条相等**；fromSeq 为包含式游标（from_seq=最后一条 seq 时恰返回 1 条）。
+- **未验证**：HTTP 路由本身（需要 X-Guest-Session 请求头，属身份契约范围）与 **SSE 流**（GET /api/runs/{run_id}/events/stream）本轮**均未实际读取**。
+
+> 因此本记录**不声称 SSE 已通过测试**，也不声称 HTTP 事件路由已被端到端调用；只声称"事件能被现有服务层读取路径原样读回"。
+
+### 19.9 数据库身份与测试前后行数
+
+**写入前核验**：配置库名 aiata_c4_test；**实际 SELECT current_database() = aiata_c4_test**；alembic_version = **a4c1e8b27d93**（与历史预期一致）；public 表 24 张；写入前所有相关表均为 0 行。
+
+**测试后实测（全部归零）**：
+
+```text
+runs=0 run_scenarios=0 run_steps=0 run_assertions=0 run_events=0 run_evidence=0
+plans=0 scenarios=0 steps=0 assertions=0 specs=0 environments=0 projects=0 guests=0 agent_tasks=0
+```
+
+清理方式：本文件用共享夹具（fixtures.stack 提供 guest/project/spec/plan，Environment 经 fixtures._keep 登记），run_* 与 run_events 随 test_runs 的 ON DELETE CASCADE 删除；取证脚本使用的一次性数据按同类顺序定向删除。**未清空整库、未删除他人记录、未执行全库重置。** 未连接开发数据库。
+
+### 19.10 普通测试结果、退出码与失败项
+
+| 运行 | 摘要 | 退出码 |
+|---|---|---|
+| 新增文件单独 | 8 passed in 1.78s | 0 |
+| 全套 第 1 次 | 54 passed, 3 skipped in 10.94s | 0 |
+| 全套 第 2 次 | 54 passed, 3 skipped in 10.70s | 0 |
+| 全套 第 3 次 | 54 passed, 3 skipped in 10.83s | 0 |
+| 警告 | **0 条** | — |
+
+收集项 49 → **57**。3 项 skip 全部是 C15/C16 的 opt-in 真实模型用例，skip 原因明确写出所需开关；**本轮未启用 RUN_DEEPSEEK_INTEGRATION，未发送任何真实模型请求**。**失败项：0。** Run 恢复专项与 C15/C16 测试**无回归**。
+
+开发过程中的失败（均已定位并修正，非产品缺陷）：① environments.base_url 为 NOT NULL，测试种子缺该列；② specId 常量写死，而 slug 由文档内容派生（实测 orders_api_fr57ci），改为运行时派生；③ 初始计划未显式给出 assert 步，断言按契约挂到最后一步因而读到 POST 的 201；④ 变量模板误写为单花括号。以上全部是**测试代码**的问题，产品源码未改。
+
+### 19.11 保护文件哈希复核（本轮结束时实测）
+
+| 文件 | SHA-256（前 16） | 结论 |
+|---|---|---|
+| app.py | 305850D8D42A066E | 未变 |
+| run_executor.py | 17E1ED00C1A0C3D7 | **未变**（本轮只读） |
+| runs.py | DE88FA976F89055B | 未变 |
+| agent.py | ACFEC24819D05E3D | 未变 |
+| conftest.py | B70261A2207DF5C1 | 未变 |
+| test_run_recovery.py | E279ED23A6D06571 | 未变 |
+| test_deepseek_provider.py | 3039925C1736C618 | 未变（= C15） |
+| test_agent_persistence.py | 85C4EF36722A1732 | 未变（= C16） |
+| docs/agent-pipeline-contract.md | 101386DE0002EEAC | 未变 |
+| docs/identity-access-contract.md | 5CF62B99D469F9D1 | 未变（§6/§8 仍未变） |
+| backend/dosc/agent-pipeline-contract.md | 715DACD8CA9F4CDD | 未变 |
+
+### 19.12 备份与哈希
+
+- **文档更新前备份**：D:\_aiapi_progress_backup_20261016-135415\（含 MANIFEST.txt），IDENTICAL=True。
+- **新测试文件快照**：D:\_aiapi_c17_backup_20261016-135415\test_run_execution.py（identical=True）。
+- **更新前 SHA-256**：AF7648D9A0CBAED19C112345FF01193FB3894BF1A6C926B11EC40BADDF43C768（164,244 字节）。
+- **更新后 SHA-256**：见 19.13。
+
+### 19.13 进度文档最终状态（本节写入后核验）
+
+- **本节写入完成时的 SHA-256**：DE19F4EF3E06EDC6DAF51305763A4A9B3F2C5A6D3642D60806858B83DCC2DCC4（仅表示写入完成时的状态）。
+- **更新前 SHA-256**：AF7648D9A0CBAED19C112345FF01193FB3894BF1A6C926B11EC40BADDF43C768（164,244 字节）。
+
+### 19.14 未完成事项
+
+1. **SSE 流（GET /api/runs/{run_id}/events/stream）未验证**；事件读取只验证到服务层（runs.get_run_events），HTTP 事件路由需 Guest Session 头，本轮未走。
+2. **审批权威仍在客户端**（C16 结论未变）：后端无法独立阻止自称 approved 的计划。
+3. **取消路径（run.cancelled）未在本轮覆盖**：冻结事件集合包含它，本轮两个用例分别是成功与断言失败。
+4. **Evidence 行与 step failed 的 transport-error 路径**未单独断言（run_evidence 本轮随 CASCADE 清理，未做内容断言）。
+5. **真实目标 API 的端到端调用**仍未验收（本轮用受控传输，这是设计要求）。
+6. 完整浏览器闭环（OpenAPI → Agent → 批准 → Run → 结果）仍未验收。
+
+### 19.15 下一阶段建议（仅建议，未执行）
+
+**Phase 9.4 建议：SSE 事件流与取消路径的行为验证。**
+
+理由：本轮把"事件正确持久化并能从服务层读回"闭合了，剩下的对外契约是 **SSE 推送**（含 Last-Event-ID 续传）与 **取消**（run.cancelled 及其结算）。二者都是冻结契约的一部分却仍无行为证据，且都可在 aiata_c4_test 内以有限读取方式验证。
+依赖：① SSE 需以可终止方式读取（不得让测试挂起）；② 不得改动冻结事件集合、seq 分配与 SSE 协议；③ 取消路径需验证 run.cancelled 与 _settle_after_cancel 的结算结果。
+
+---
+
+## 20. Task C18 — Phase 9.4：SSE 事件流与 Run 取消行为验证（2026-10-16）
+
+**结论：PASS（事件列表 HTTP 路由、SSE 真实流读取、Last-Event-ID 续传、Run 取消、取消后结算五项分别验证；产品源码零修改）**
+
+> 五项分别独立验证，任一项不得由其余项推定：20.4 事件列表路由 ｜ 20.5 SSE 流 ｜ 20.6 Last-Event-ID ｜ 20.7 取消 ｜ 20.8 取消后结算。
+
+### 20.1 本轮修改的文件
+
+| 文件 | 变更 | 目的 |
+|---|---|---|
+| backend/tests/test_run_stream_and_cancel.py | **新增**（23,982 B，SHA-256 15E3A3C8FF89EB16…） | 10 项 HTTP 事件流与取消测试 |
+| docs/PROJECT_PROGRESS.md | 追加本节 | 记录本轮证据 |
+
+**产品源码零修改**：app.py、run_executor.py、runs.py、agent.py、api/routers/runs.py、api/deps.py、services/guest_session.py、conftest.py、pyproject.toml、uv.lock、两份契约、backend/dosc 旧副本**逐个哈希复核全部未变**。**未改冻结事件集合、未改 seq 分配、未改 SSE 协议、未改 Guest Session 边界、未改 schema。**
+
+### 20.2 真实 SSE 与取消路径（源码确认，非历史报告）
+
+| 项目 | 实测确认 |
+|---|---|
+| 事件列表路由 | **GET /api/runs/{run_id}/events**，Query fromSeq（含式，默认 1），依赖 CurrentGuestSessionDep，调用 runs.get_run_events |
+| SSE 路由 | **GET /api/runs/{run_id}/events/stream**，response_class=StreamingResponse，**media_type="text/event-stream"**，headers 含 cache-control: no-cache 与 x-accel-buffering: no |
+| 帧格式 | runs._sse_frame：每帧三行 **id: {seq} / event: {type} / data: {完整事件 JSON}**，以空行结束；保活帧为 ": ping" 注释帧 |
+| Last-Event-ID 读取位置 | **请求头**（Header 参数，alias="Last-Event-ID"），与 fromSeq 并存，解析在 _stream_from_seq |
+| 续传语义 | **_stream_from_seq：fromSeq 优先；否则 Last-Event-ID 为"收据"，从它 +1 开始；都没有则从 1** |
+| 流的终止 | stream_run_events 在"没有新事件且 status 属于 _TERMINAL_STATUSES(passed/failed/cancelled)"时 **return**；每轮通过 read_stream_batch 一次查询同时取状态与增量 |
+| 取消入口 | **POST /api/runs/{run_id}/cancel**，依赖 CurrentGuestSessionDep，先 guest_access.require_guest_run_project 再 runs.cancel_run |
+| 取消的事务 | _transition_to_cancelled（条件 UPDATE）→ _insert_cancelled_event → _fetch_run_row → 构建响应 → **一次 commit**；已完成/已失败/已取消的 Run 不匹配任何行，**不写事件**、返回 200 原样 |
+| 执行器如何得知取消 | **_still_running 在每一步边界重新查库**（不使用缓存）；发现非 running → _stop_scenario 结算并返回 |
+| 取消后的事件由谁写 | **取消路由写 run.cancelled**（executor 明确不写）；seq 由 append_run_event 分配 |
+| _settle_after_cancel | 调 _settle_unfinished（steps pending/running → skipped；assertions 非 passed/failed → skipped；scenario pending → skipped）后 commit；**不动 Run 行本身** |
+
+### 20.3 测试如何驱动真实 HTTP 与真实取消
+
+- **真实应用**：所有 HTTP 请求经 **httpx.ASGITransport(app=create_app())**，带真实 **X-Guest-Session** 令牌（token → SHA-256 → guest_sessions.token_hash，与生产同一路径）。
+- **真实执行器**：仍不替换执行器，只把 httpx.AsyncClient 换成携带 MockTransport 的子类（沿用既有约定）。
+  **本轮修正了一处测试自身的缺陷**：该子类最初重写了 send()，把测试自己的 ASGI 客户端也拦截了（表现为所有请求被 404 {"error":"unexpected target"}）。现在只有"没有自带 transport"的客户端（即执行器自建的那个）走脚本，自带 transport 的客户端走真实实现。
+- **真实取消时序**：受控 transport 在第一个请求处 **await 一个 asyncio.Event** 阻塞；测试等到该信号（并用**另开 session 读库**确认 Run 状态确实是 running）后，才通过 HTTP POST cancel；随后释放阻塞。因此"取消发生在 Run 运行中"是被证明的，而不是碰巧。
+- **取消不依赖取消测试自己的 task**：测试从不 cancel 自己；执行器 task 在 cancel 后自然结束（测试只在其未结束时兜底清理）。
+
+### 20.4 事件列表 HTTP 路由验证结果
+
+| 验证 | 结果 |
+|---|---|
+| 正确 Guest Session 可查询 | **200**，seq 与 eventType 与数据库记录逐条相等 |
+| 事件按 seq 排序 | 与数据库 seq 顺序一致 |
+| fromSeq 游标 | 含式：fromSeq = stored[2].seq 时恰好返回该条及其后（实测通过） |
+| 缺失鉴权头 | **401**，code = **guest-session-required** |
+| 无效令牌 | **401**，code = guest-session-required |
+
+响应字段名按实际契约：**eventType**（不是 type）、payload 原样返回；测试断言已按此更正。
+
+### 20.5 SSE 真实流读取证据
+
+实测（对一条已终结的 Run）：
+
+```text
+status: 200 | content-type: text/event-stream; charset=utf-8
+cache-control: no-cache | x-accel-buffering: no
+full stream ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+first frame verbatim:
+  id: 1
+  event: run.started
+  data: {"startedAt":"...","runId":"...","seq":1,"at":"..."}
+```
+
+- 帧的 **id == seq**、event == event_type、data == 存储的事件对象，逐帧与数据库记录核对通过；首帧 run.started、末帧 run.completed。
+- 无鉴权头的 stream 请求返回 **401 guest-session-required**（不会先开流再拒绝）。
+- **流可安全终止**：终结 Run 上流自行结束（源码的 _TERMINAL_STATUSES 分支）；测试另外用 asyncio.wait_for(30s) 包裹每次读取，避免未来改动导致挂起。
+- **未用删除流行为的方式迁就测试**：读取使用 aiter_text() 逐块消费。
+
+**如实说明一处限制**：本次对"已终结 Run"的读取在 ASGI 传输下只观察到 **1 个 chunk（2846 字节，+110ms）**，即 11 帧在一次读取中就绪后流关闭。因此本轮证明的是"**响应确实是 text/event-stream 流式响应、帧格式与持久化一致、能安全读完并结束**"，**并未**证明"帧在运行过程中被逐条实时推送"（那需要一条运行中的 Run 并在事件之间观察到达时间）。历史记录（C3 起）与 SSE 头部设置支持该设计，但**本轮没有实测逐帧实时性**。
+
+### 20.6 Last-Event-ID 实际语义与续传结果
+
+实测（同一条 Run，11 条事件）：
+
+```text
+full stream ids       : [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+Last-Event-ID: 3 ids  : [4, 5, 6, 7, 8, 9, 10, 11]   <- 不重复 3，不丢 4..11
+Last-Event-ID: 11 ids : []                            <- 游标在末尾时不重放
+```
+
+- 语义为**收据**（已读到 seq N，从 N+1 继续），与源码注释一致；**未自行发明错误码或契约外恢复行为**。
+- 边界：游标为最后已读取 seq → 空流（已测）；无游标且无 fromSeq → 从 1 开始（已测）；无效的 Last-Event-ID 由路由校验拒绝（源码中 422 分支，本轮未单独测试）。
+- **契约未承诺**在 SSE 中重复发送已确认事件，实测行为与契约一致，**未修改 SSE 协议**。
+
+### 20.7 Run 取消：真实入口与执行任务控制路径
+
+- 入口：**POST /api/runs/{run_id}/cancel**（HTTP，带 Guest Session）。
+- 时序：执行器阻塞在第一个请求上 → 测试读库确认 status=running → POST cancel（200，body.status="cancelled"）→ 释放阻塞 → 执行器在下一个边界发现非 running → _stop_scenario 结算 → _finish_run 的条件 UPDATE **不匹配**（run 已非 running）→ 不写 run.completed。
+- 证明"确实运行中"：取消前用**另开 session** 读到 status=running（不是从内存推断）。
+
+### 20.8 取消前后状态对比与事件结算（实测）
+
+| 对象 | 取消前 | 取消后实测 | 依据 |
+|---|---|---|---|
+| Run | running | **cancelled**，finished_at 已写，error_code = None | 取消路由的条件 UPDATE |
+| Scenario #1（取消时正在执行） | running | **running**（保留原状态） | _stop_scenario：started_any 为真则不改 scenario |
+| Scenario #2（从未开始） | pending | **skipped** | _stop_scenario：未开始 → skipped |
+| Step: 已完成的 read | passed | **passed**（保持） | _settle_unfinished 只动 pending/running |
+| Step: 取消时在途的 extract | running | **skipped** | _abandon_step（pending+running → skipped） |
+| Step: 尚未开始的 create / assert | pending | **skipped** | _skip_pending_steps |
+| Scenario #2 的全部 Step | pending | **skipped** | 同上 |
+| Assertion | skipped | **skipped（未被标记为 passed）** | _settle_unfinished 的 not_in((passed, failed)) 过滤 |
+
+**事件（实测，一次真实取消）**：
+
+```text
+seq=1 run.started
+seq=2 step.started
+seq=3 run.cancelled
+seq=4 step.completed
+```
+
+- **run.cancelled 恰好 1 条**；**无 run.completed、无 run.failed**；seq 稠密无缺号；全部事件属于冻结的 8 类。
+- **如实记录一个可观察到的顺序特性**：被取消时在途的那个 Step 仍会写出它的完成事件，该帧**可能落在 run.cancelled 之后**（本次实测落在其后）。原因是 run.cancelled 由取消路由在**自己的事务**里写入，而该 Step 此刻仍在收尾；两者并发，顺序取决于时序。**冻结契约（docs/agent-pipeline-contract.md）只固定事件名集合与"seq 每 run 从 1 稠密递增"，没有承诺"运行中取消时 step 事件必须先于 run.cancelled"**。因此本轮断言的是真正不变的部分：终态事件有且只有一个且为 run.cancelled、执行器只宣告并结算了一个 Step、seq 稠密、无冻结集外事件。**未为迁就测试而修改契约，也未据此判定产品缺陷。**
+
+### 20.9 取消后是否残留执行 task / 请求 / 记录 / 流
+
+- **执行 task**：取消后 run_id 不在 run_executor._RUNNING_TASKS（本测试直接 await execute_run，注册表本就不参与；断言的是注册表干净）。
+- **不再发出请求**：受控 transport 的请求计数在取消前后**相等**（断言 len(sent) == requests_before_cancel）。
+- **数据库**：跑完整套后全部相关表 **0 行**（见 20.12）。
+- **后台流**：SSE 读取全部在 asyncio.wait_for 内完成并关闭；无遗留 consumer。
+- **重复取消**：对已取消的 Run 再取消返回 **200 且原样**，事件仍只有 1 条 run.cancelled（实测）。
+- **未鉴权的取消**：401 guest-session-required，且 Run 仍为 queued、**无任何事件**（实测）。
+
+### 20.10 本轮目标测试与常规回归测试结果
+
+**本轮目标测试（新增文件）**：
+
+| 运行 | 摘要 | 退出码 |
+|---|---|---|
+| tests/test_run_stream_and_cancel.py | **10 passed in 2.53s** | 0 |
+
+**常规回归（全套，连续三次）**：
+
+| 运行 | 摘要 | 退出码 |
+|---|---|---|
+| 全套 第 1 次 | 64 passed, 3 skipped in 11.95s | 0 |
+| 全套 第 2 次 | 64 passed, 3 skipped in 12.02s | 0 |
+| 全套 第 3 次 | 64 passed, 3 skipped in 11.81s | 0 |
+| 警告 | **0 条** | — |
+
+收集项 **57 → 67**。3 项 skip 全是 C15/C16 的 opt-in 真实模型用例（skip 原因写明所需开关）；**本轮未启用模型集成开关，零真实模型请求**。**失败项：0**。C15/C16/C17 的既有测试全部保留且无回归。
+
+**开发过程中的失败（均已定位并修正；全部是测试代码问题，产品源码未改）**：① app_client() 缺少 asynccontextmanager；② 该子类重写 send() 时把测试自己的 ASGI 客户端也拦下（分支守卫改到 send()）；③ **测试用"已知令牌的 guest"与"shared fixture 的 project"不是同一个所有者**，而 run 路由按设计对非所有者返回 404 —— 改为由该 guest 自己拥有 project；④ 事件列表响应字段是 **eventType** 而非 type；⑤ 一处测试函数漏了 read_session 参数；⑥ 曾把"run.cancelled 必须是最后一个事件"当作契约，实测发现并发取消下并不成立，已改为断言真实不变量（见 20.8）。
+
+### 20.11 是否修改产品源码
+
+**未修改任何产品源码。** 上述 6 处全部是新增测试文件内部的问题。既未发现需要修复的产品缺陷，也未为了通过测试而改动契约、SSE 协议、事件集合或取消机制。
+
+### 20.12 数据库身份与测试前后行数
+
+**写入前核验**：配置库名 aiata_c4_test；**实际 SELECT current_database() = aiata_c4_test**；alembic_version = **a4c1e8b27d93**；public 表 24；写入前相关表全为 0 行。
+
+**测试后实测（全部归零）**：
+
+```text
+runs=0 run_scenarios=0 run_steps=0 run_assertions=0 run_events=0 run_evidence=0
+plans=0 scenarios=0 steps=0 assertions=0 specs=0 environments=0 projects=0 guests=0
+```
+
+清理方式：新增的 guest/project/environment 经共享夹具或定向删除；run_* 与 run_events 随 test_runs 的 ON DELETE CASCADE 删除；取证脚本的一次性数据按同类顺序定向删除。**未清空整库、未删除他人记录、未连接开发数据库、未执行迁移。**
+
+### 20.13 备份与哈希
+
+- **文档更新前备份**：D:\_aiapi_progress_backup_20261016-140339\（含 MANIFEST.txt），IDENTICAL=True。
+- **新测试文件快照**：D:\_aiapi_c18_backup_20261016-140339\test_run_stream_and_cancel.py（identical=True）。
+- **更新前 SHA-256**：56EEE2762AECF531B1CBF558327E34AAB2C2A629D6789B62DEAF226BDDDFBC81（178,245 字节）。
+- **更新后 SHA-256**：见 20.14。
+
+### 20.14 进度文档最终状态（本节写入后核验）
+
+- **本节写入完成时的 SHA-256**：7860A66B6D18659795A0AF8A53A8F98F836B3A25452A4098A04A0544CE671601（仅表示写入完成时的状态）。
+- **更新前 SHA-256**：56EEE2762AECF531B1CBF558327E34AAB2C2A629D6789B62DEAF226BDDDFBC81（178,245 字节）。
+
+### 20.15 尚未解决的问题
+
+1. **SSE 逐帧实时性未实测**（见 20.5）：只证明响应是流式的、帧内容正确、能安全读完；未在运行中的 Run 上观察帧的到达时刻。
+2. **取消后可能存在一个 trailing step 事件**（见 20.8）：契约未禁止，但"run.cancelled 是否应为最后一个事件"仍是一个未决的时序问题；若产品希望终态事件严格收尾，需要单独的产品决策（本轮未改）。
+3. **取消不中断已在途的 HTTP 请求**：执行器在**步边界**检查取消，因此在途请求会跑完（本轮实测：取消后仍收到 step.completed）。这是现有设计的实际行为，未被本轮改变。
+4. **SSE 的 fromSeq 与 Last-Event-ID 同时给出时的优先级**已由源码确认（fromSeq 优先），但本轮未单独测试该组合。
+5. **无效 Last-Event-ID（非数字）的 422 分支**未单独测试。
+6. 审批权威仍在客户端（C16 结论未变）；完整浏览器闭环仍未验收。
+
+### 20.16 下一阶段建议（仅建议，未执行）
+
+**Phase 9.5 建议：SSE 实时性与取消语义的产品决策收口。**
+
+理由：本阶段的**验证**目标已闭合，但留下两个**产品语义**问题需要决策而非测试：① run.cancelled 是否必须是事件流的最后一个事件（若是，需要在执行器的收尾路径上做最小改动：结算前再确认终态，或在 run 已终态时不再写 step 事件）；② 取消是否应中断在途请求（当前是步边界检查）。两者都需要先明确契约意图，再决定是否修改产品代码。
+依赖：① 任何改动都不得改变冻结事件集合与 seq 分配；② 若决定修改，须有明确授权并补充对应的回归测试；③ SSE 实时性如需实测，需要一条运行中且事件间隔可控的 Run。
+
+---
+
+## 21. Task C19 — Phase 9.5：Run 取消语义收口与 SSE 实时推送验证（2026-10-16）
+
+**结论：PARTIAL**
+
+> **取消语义的缺陷已定位、修复并验证（PASS）。SSE 活动 Run 的实时推送未能验证（未完成）。**
+> 两部分分开陈述，不得互相代替。
+
+### 21.1 本轮修改的文件
+
+| 文件 | 变更 | 说明 |
+|---|---|---|
+| backend/src/backend/services/run_executor.py | **修改**（+87 行，75,386 B，SHA-256 2098BE9342EE1346…） | 取消竞态的最小修复：步后状态检查、被打断步骤的结算、任务取消入口与取消结算 |
+| backend/src/backend/services/runs.py | **修改**（+20 行，108,097 B，SHA-256 8A770C90AB7D3289…） | 取消路由在提交终态后中断本进程执行任务，并结算被冻结的行 |
+| backend/tests/test_run_cancel_race.py | **新增**（约 26 KB，SHA-256 9F267A35B7F33291…） | 5 项取消竞态与活动流测试（3 通过、2 xfail） |
+| backend/tests/test_run_stream_and_cancel.py | **修改**（C18 的 1 处期望，见 21.6） | 该期望编码的是修复前的行为 |
+| docs/PROJECT_PROGRESS.md | 追加本节 | 记录本轮证据 |
+
+**未修改**：app.py、agent.py、api/routers/runs.py、api/deps.py、services/guest_session.py、conftest.py、pyproject.toml、uv.lock、两份契约、backend/dosc 旧副本（哈希见 21.9）。**未新增 schema、未新增 migration、未改冻结事件集合、未改 seq 分配、未改 SSE 协议、未改 Guest Session 边界、未改审批权威。**
+
+### 21.2 取消竞态的真实根因（源码 + 实测证据）
+
+**根因有两个，不是一个。**
+
+1. **执行器在步返回后直接记录成功，不再确认 Run 是否仍在运行。** _run_scenario 在 _execute_step 返回后走到 _finish_step(status=PASSED) 与 append_run_event("step.completed")（原 1222-1235 行），这两步之间没有 _still_running 检查。循环**顶部**与**发请求前**各有一处检查，唯独返回后没有。
+2. **取消只在下一个步边界生效，不打断在途请求。** 取消路由只做状态转换与事件写入，从不触及执行任务；执行器只能在下一个步边界发现取消。因此被取消时在途的请求会跑完，并走进上面那条记录成功的路径。
+
+**修复前的实测（诊断脚本，取消发生在第一个请求阻塞期间）**：
+
+```text
+status while blocked    : running        <- Run 确实在运行
+cancel HTTP             : 200 cancelled
+events                  : [(1, run.started), (2, step.started), (3, run.cancelled), (4, step.completed)]
+in-flight step (DB)     : skipped        <- 数据库说 skipped，事件说 completed
+tail after run.cancelled: [step.completed]
+```
+
+这正是 C18 遗留的问题 1 与问题 2：**数据库与事件流对同一个 Step 给出互相矛盾的说法，且终态事件之后还有生命周期事件。**
+
+### 21.3 产品代码的最小修改（两个文件，共 +107 行）
+
+**run_executor.py**：
+
+1. _stop_interrupted_step(session, run_id, step)：把被打断的步结算为 skipped（不自行提交，与随后的 scenario 结算同属一个事务）。
+2. _run_scenario 在 _execute_step 返回后、写入任何成功结果**之前**新增一处检查：`if outcome is None and not await _still_running(session, run_id):` 则结算该步、_stop_scenario、返回 SKIPPED。这是**不依赖任务取消**的保证：即使取消来自另一个进程，畸形事件也不会被写出。
+3. cancel_execution(run_id) -> bool：请求本进程的执行任务立即停止（task.cancel()）；没有任务时返回 False，不是失败。
+4. _settle_cancelled(run_id)：捕获 CancelledError 后结算树，**不写任何事件**。用 asyncio.shield 保护，因为取消后任务内任何 await 都会再次抛 CancelledError；写入是幂等的，因此二次尝试不发生也不影响结果。
+5. execute_run 新增 except asyncio.CancelledError 分支：记录日志、结算、**重新抛出**（吞掉取消会告诉 asyncio 一个被取消的任务正常完成）。
+
+**runs.py（取消路由）**：终态与 run.cancelled 提交**之后**，才调用 cancel_execution() 中断执行任务，随后调用 _settle_unfinished() 并再提交一次，使这次取消请求返回时被冻结的行已经结算完毕。顺序是关键：**取消先落地，然后才要求停止**。_settle_unfinished 本来就幂等且不碰已完成的步/已判定的断言，所以执行器已自行停止时结果完全相同。
+
+**修复后的实测（同一诊断脚本）**：
+
+```text
+events                  : [(1, run.started), (2, step.started), (3, run.cancelled)]
+in-flight step (DB)     : skipped
+tail after run.cancelled: []          <- 缺陷消除
+requests sent           : [("GET", "/orders/order_1")]   <- 未发出第二个请求
+```
+
+### 21.4 在途 HTTP 请求是否被实际中断
+
+**是**，但有一个必须说清的边界。
+
+- 中断方式：取消路由提交终态后调用 cancel_execution()，对执行任务 task.cancel()；在途的 client.request(...) 被取消，该请求不会返回。
+- 实测证据（本轮目标测试 test_cancel_interrupts_the_request_and_settles_the_step）：取消后执行任务以 **CancelledError** 结束（测试用 pytest.raises(asyncio.CancelledError) 断言），并且受控传输**只收到 1 个请求**（assert len(client_type.sent) == 1，即取消后没有第二个请求）。
+- **边界（如实记录）**：cancel_execution 只能触及**本进程**的 _RUNNING_TASKS。多进程部署下取消仍只靠**下一个步边界**的数据库状态检查生效（21.3 第 2 条），因此跨进程时在途请求会跑完，但**不会**写出误导性的 step.completed。
+- **不声称**取消能撤销目标服务器已经处理的副作用。
+
+### 21.5 取消前后 Run / Scenario / Step / Assertion 状态（修复后实测）
+
+| 对象 | 取消前 | 取消后实测 | 依据 |
+|---|---|---|---|
+| Run | running | **cancelled** | 取消路由的条件 UPDATE |
+| Scenario #1（取消时在途） | running | **running**（保留） | _stop_scenario：started_any 为真则不改 |
+| Scenario #2（未开始） | pending | **skipped** | _stop_scenario |
+| Step 在途（read） | running | **skipped** | _stop_interrupted_step（本轮新增） |
+| Step 未开始（extract/create/assert） | pending | **skipped** | _skip_pending_steps |
+| Scenario #2 全部 Step | pending | **skipped** | 同上 |
+| Assertion | skipped | **skipped（未被标记 passed）** | _settle_unfinished 的过滤 |
+
+**已完成的工作保留真实结果**：C19 的 test_cancel_between_steps_keeps_finished_work_and_stops_the_rest 断言取消前已完成的步仍为 passed（该用例目前 xfail，见 21.7；其断言表达的是目标语义）。
+
+### 21.6 run.cancelled 的最终位置、数量与 seq（修复后）
+
+```text
+seq=1 run.started
+seq=2 step.started
+seq=3 run.cancelled      <- 最后一条，且是唯一的终态事件
+```
+
+- 终态事件**恰好 1 条**，且为 run.cancelled；无 run.completed、无 run.failed。
+- **run.cancelled 之后没有任何生命周期事件**（新增测试用 _assert_no_lifecycle_event_after_cancel 明确断言：任何 seq 大于终态事件的记录都必须为空）。
+- seq 由 append_run_event 分配，1..n 稠密无缺号；全部事件属于冻结的 8 类。
+
+### 21.7 SSE 实时推送验证：**未完成**
+
+**结论：本轮没有取得活动 Run 实时推送的有效证据。** 我实现了一个真实的 HTTP SSE 测试（打开流 → 启动执行器并让它在第一个请求处阻塞 → 读取已经发生的帧 → 断言帧在释放之前到手 → 释放并读完剩余帧 → 校验与数据库一致），但**它无法可靠终止**：读取在 httpx.ASGITransport 下挂起。
+
+- 已排除的原因（逐一实测）：鉴权路径正常（无令牌的流请求返回 401 并正常结束，81 字节 body）；事件确实已持久化（同时在库中可读到 run.started 与 step.started）；_ParkedClient 的 park 只触发一次，不会被后续请求再次阻塞；ASGI 传输本身支持流式（C18 已读到终结 Run 的完整帧）。
+- **未定位的原因**：在"执行器持有一个打开的事务、同时从另一个连接读同一 Run 的事件流"这一组合下挂起。怀疑与连接池（pool_size 默认 5、pool_timeout 30s）或 ASGITransport 的并发行为有关，**本轮没有取得确证**，因此不写成结论。
+- 处理方式：该测试与其"步间取消"同伴被标记为 **xfail（strict=False）**，并加上整体超时（LIVE_PUSH_TIMEOUT = 25s、PARK_TIMEOUT = 8s），使它**失败而不是挂起整套测试**。**没有删除测试，也没有为了让测试通过而修改生产 SSE 路由**（未改 runs.stream_run_events、未改帧格式、未改 _stream_from_seq）。
+- 因此 21.5/21.6 关于取消的结论**成立**，而"活动 Run 的帧会在执行期间到达客户端"这一条**仍未被证明**；C18 的结论（终结 Run 的帧格式、内容、Last-Event-ID 续传、text/event-stream 响应与 x-accel-buffering: no）仍然有效且是当前最好的证据。
+
+### 21.8 测试结果（分别报告）
+
+**本轮目标测试（tests/test_run_cancel_race.py）**：
+
+| 测试 | 结果 |
+|---|---|
+| test_cancel_interrupts_the_request_and_settles_the_step | **PASSED** —— 在途请求被中断、任务以 CancelledError 结束、只发出 1 个请求、事件流无尾随事件 |
+| test_cancel_between_steps_keeps_finished_work_and_stops_the_rest | **XFAIL**（超时保护内未终止，见 21.7） |
+| test_cancel_before_any_request_sends_nothing | **PASSED** —— 排队态取消后执行不复活、零请求、仅 1 条 run.cancelled |
+| test_cancelling_a_finished_run_is_still_a_no_op | **PASSED** —— 已终结 Run 重复取消不改状态、不新增事件 |
+| test_stream_delivers_frames_while_the_run_is_still_executing | **XFAIL**（同上） |
+
+合计：**3 passed, 2 xfailed in 27.20s**，退出码 0。
+
+**C18 相关回归**：tests/test_run_stream_and_cancel.py 全部通过（10 项），其中取消用例的 1 处期望已按修复后的真实行为更新（在途步现在是 skipped 而非 passed，因为请求确实被中断了），"已完成的步保留真实结果"的语义由 C19 覆盖。
+
+**后端全套（连续两次）**：
+
+| 运行 | 摘要 | 退出码 |
+|---|---|---|
+| 第 1 次 | **67 passed, 3 skipped, 2 xfailed in 38.18s** | 0 |
+| 第 2 次 | **67 passed, 3 skipped, 2 xfailed in 38.18s** | 0 |
+
+两次结果**逐字相同**，无不稳定竞争。3 项 skip 全是 C15/C16 的 opt-in 真实模型用例（**本轮未启用，零真实模型请求**）；2 项 xfail 就是 21.7 说明的两个未完成用例。收集项 67 → **72**。
+
+### 21.9 数据库身份、schema 版本与行数
+
+- 写入前核验：**SELECT current_database() = aiata_c4_test**；alembic_version = a4c1e8b27d93；public 表 24 张；相关表 0 行。
+- 全套两次之后：runs=0 run_scenarios=0 run_steps=0 run_assertions=0 run_events=0 run_evidence=0 plans=0 specs=0 environments=0 projects=0 guests=0。
+- **必须如实记录的一次污染与清理**：本轮早期有 4 次测试运行被强杀（诊断挂起与两次 xfail 挂起），进程未走到 teardown，留下 4 runs / 4 scenarios / 16 steps / 4 assertions / 6 plans / 6 specs / 4 environments / 6 projects / 6 guests。经逐条盘点（public_id 前缀 c19prj_、c19b_、c4prj_ 与 plan_c17_orders、orders_api_fr57ci、名称 "C19 project"/"C19 environment"/"C4 scratch project"）确认**全部是本轮与被强杀的测试运行产生的记录**（该库在设计上就是空的测试库），随后按依赖顺序定向删除并复核为 0 行。**未清空整库、未使用 TRUNCATE、未删除任何非本轮记录、未连接开发库、未执行迁移。** 最后一次全套运行后再次实测为 0 行（即测试自身的清理是有效的）。
+
+### 21.10 备份与哈希
+
+- **文档更新前备份**：D:\_aiapi_progress_backup_20261016-145348\（含 MANIFEST.txt），IDENTICAL=True。
+- **改动文件快照**：D:\_aiapi_c19_backup_20261016-145348\（test_run_cancel_race.py、run_executor.py、runs.py，均 identical=True）。
+- **更新前 SHA-256**：C7AFDB65FD38D7588933F7CCEF49E294ABC90CEE3A729185134D783872E1E884（193,957 字节）。
+- **更新后 SHA-256**：见 21.11。
+
+### 21.11 进度文档最终状态（本节写入后核验）
+
+- **本节写入完成时的 SHA-256**：FE5373E69F6747D00391F3226A2DB8C2C4D83742161FDBA33649F4CC7991AFC0（仅表示写入完成时的状态）。
+- **更新前 SHA-256**：C7AFDB65FD38D7588933F7CCEF49E294ABC90CEE3A729185134D783872E1E884（193,957 字节）。
+
+### 21.12 尚未解决的问题
+
+1. **活动 Run 的 SSE 实时推送仍未验证**（21.7）：测试已写好但挂起，未定位根因；这是本阶段唯一未完成的验收项。
+2. **跨进程取消不中断在途请求**（21.4 边界）：cancel_execution 只作用于本进程；多进程下仍靠步边界检查，在途请求会跑完（但不再写出误导性事件）。
+3. **取消仍不撤销目标服务器的副作用**（设计事实，非缺陷）。
+4. **_settle_unfinished 的二次结算**：取消路由现在会在执行器停止后再结算一次。它是幂等的（本轮两次全套验证），但"路由与执行器都能结算"这一点值得后续独立审查是否收敛为单一所有者。
+5. **两个 xfail 用例需要真正的修复**：应先定位挂起根因，再决定是换测试驱动（例如真实的本地 ASGI 服务器而非 ASGITransport）还是调整测试结构。
+6. 审批权威仍在客户端（C16 结论未变）；完整浏览器闭环仍未验收。
+
+### 21.13 下一阶段建议（仅建议，未执行）
+
+**Phase 9.6 建议：解决活动 Run 的 SSE 实时性验证（换用真实本地 ASGI 服务器驱动）。**
+
+理由：这是本阶段唯一未闭合的验收项，且已经明确不是产品契约问题（帧格式、终止、续传都已验证），而是**测试驱动**问题。最小路径是启动一个受控的本地 ASGI 服务（uvicorn + 回环端口）并用真实 HTTP 客户端读取，从而绕过 httpx.ASGITransport 的并发限制；这不需要改动任何生产代码。
+依赖：① 需要授权在测试中启动本地服务进程（本轮未授权此类改动）；② 不得为了测试通过而修改 SSE 生产路由；③ 完成后应把两个 xfail 用例转为正常断言。
+
+---
+
+## 22. Task C20 — Phase 9.5 收尾：取消状态一致性与真实 SSE 实时性验证（2026-10-17）
+
+**结论：PASS**
+
+> C19 的两个 xfail **根因都在测试侧，不在产品侧**，并已分别修复为正常的通过断言；
+> 另外发现并修复了一处**真实的产品状态缺陷**（取消后 Scenario 遗留 running）。两个 xfail 已全部消失。
+
+### 22.1 本轮修改的文件
+
+| 文件 | 变更 | 说明 |
+|---|---|---|
+| backend/src/backend/services/run_executor.py | **修改**（+22 行，75,928 B，SHA-256 871083034FCD812B…） | 唯一的产品改动：_settle_unfinished 现在也结算 running 的 Scenario；_stop_scenario 的 docstring 随之更正 |
+| backend/tests/test_run_stream_live.py | **新增**（13,199 B，SHA-256 C21D5054E9536997…） | 真实 uvicorn 进程 + 真实 HTTP 客户端的活动 Run SSE 测试（1 项） |
+| backend/tests/test_run_cancel_race.py | **修改**（21,330 B，SHA-256 3A2FF7489B433002…） | 去掉 2 个 xfail；修复 xfail#1 的陈旧 identity map；补 Scenario 终态断言；删除被取代的进程内 SSE 探针 |
+| backend/tests/test_run_stream_and_cancel.py | **修改**（24,399 B，SHA-256 E041BAB13F2D9F99…） | C18 的 1 处 Scenario 期望按新契约更新 |
+| docs/PROJECT_PROGRESS.md | 追加本节 | 记录本轮证据 |
+
+**未修改**：runs.py（保持 C19 的 8A770C90AB7D3289…）、app.py、conftest.py、pyproject.toml、uv.lock、两份契约、backend/dosc 旧副本、backend/.env。**未新增 schema、未新增 migration、未改冻结事件集合、未改 seq 分配、未改 SSE 协议、未改审批权威。**
+
+### 22.2 第一项：取消后 Scenario 仍为 running 的根因、契约依据与处理
+
+**契约调查（先取证，再决定）**：
+
+1. **状态枚举与约束**：RunScenario.status 是 String(30)，默认 pending，无 CHECK 约束限制取值；现有合法值 pending / running / passed / failed / skipped。**没有**任何契约或约束允许"终态 Run 持有 running 的 Scenario"。
+2. **职责分工（实测源码）**：_finish_scenario 负责写终态并置 finished_at；**通过 / 失败**两条路径都会调用它（run_executor.py:1328），因此 pass/fail 的 Run 里所有 Scenario 必然终态。
+3. **_settle_unfinished 的过滤条件原本是 RunScenario.status == "pending"**（原 :835）——只结算"从未开始"的场景。因此**只有取消**这一条路径会让已开始的 Scenario 永久停在 running，形成"Run 已终态、Scenario 仍在跑"的矛盾。
+4. **_stop_scenario 的取舍**：当 started_any 为真时它不写终态（注释解释为与前端 reducer 对齐）。前端 runState.ts:130-133 的 settleRemaining 规则是 `started ? scenario.status : skipped`，即**保留服务端给的值**——所以服务端写 skipped，前端显示 skipped；服务端写 running，前端显示 running。两者"一致"只取决于服务端写什么，**并不构成 running 必须保留的证据**。
+
+**判定**：这是**取消结算的遗漏**，不是契约允许的状态。依据是第 2 条（其他终态路径都结算）与第 3 条（唯一不结算的路径就是取消），以及与第 1 条（没有任何契约支持）。
+
+**处理（最小修复）**：_settle_unfinished 的 Scenario 过滤条件由 `== "pending"` 改为 `.in_(("pending", "running"))`，值仍是既有的 **skipped**。
+- 未新增状态、未新增列、未迁移；
+- 不触碰真实通过的 Step（过滤条件仍只作用于 pending/running 的 Step）；
+- 不把未执行的 Step/Assertion 标为 passed（_settle_unfinished 对 Assertion 仍用 not_in((passed, failed))）；
+- 已 passed / failed 的 Scenario 既不 pending 也不 running，**不受影响**。
+
+**验收证据（实测，取消发生在第一个请求阻塞期间）**：
+
+```text
+取消前：scenario_c17_orders -> running   (read passed, create running, ...)
+取消后：scenario_c17_orders -> skipped   (read passed, extract passed, create skipped, assert skipped)
+        scenario_c20_second -> skipped   (全部 skipped，started_at 为 NULL)
+        run -> cancelled
+```
+
+即：**真实完成的 Step 保留 passed，在途的 Step 结算为 skipped，剩下的不执行，Scenario 与 Run 一样是终态。**
+
+### 22.3 两个 xfail 的具体名称、原始原因与最终处理
+
+| # | 测试 | 原始表现 | 真实根因 | 处理 | 现状 |
+|---|---|---|---|---|---|
+| 1 | test_cancel_between_steps_keeps_finished_work_and_stops_the_rest | xfail（C19 记为"超时未终止"），--runxfail 后实际报 `CREATE_STEP.status == "running"` | **测试侧**：该用例先用 read_session 在读运行态时加载了 RunStep 行，而 conftest 的会话是 expire_on_commit=False 且从不 commit，**identity map 缓存了当时的 running**；取消后的再次 select 返回同一批缓存对象，读到的是旧值。产品侧的结算其实是正确的（用独立会话复测：取消返回后 create 已是 skipped） | 在取消后的读取前调用 read_session.expire_all()，使断言真正来自数据库；并补 Scenario 终态断言 | **PASS**（1.57s） |
+| 2 | test_stream_delivers_frames_while_the_run_is_still_executing | xfail（C19 记为"httpx.ASGITransport 下挂起"） | **测试驱动侧**：执行器与 SSE 路由跑在**同一个进程**，流请求与"被 park 的执行器所持有的未提交事务"**共用同一个 engine 连接池**（pool_size 默认 5），流拿不到连接而挂起。不是产品缺陷 | 把服务端移到**独立 uvicorn 进程**（独立事件循环、独立连接池），用真实 HTTP 客户端读流，写成 tests/test_run_stream_live.py；并删除了被取代的进程内探针 | **PASS**（4.96s） |
+
+**关于删除的说明（如实记录）**：C19 留在 test_run_cancel_race.py 里的 `_live_push_probe` 及其 xfail 包装、SSE 帧解析器，已随文件末尾 6,011 字节一并移除，**因为同一个主张现在由 test_run_stream_live.py 以真实通过的方式覆盖**（不是"删掉失败测试掩盖问题"）。移除后该文件**不再含任何 xfail**。
+
+### 22.4 是否修改产品源码
+
+**是，一处**：backend/src/backend/services/run_executor.py 的 _settle_unfinished，把 Scenario 的结算过滤条件从 pending 扩到 pending+running（并同步更正 _stop_scenario 的 docstring）。缺陷证据见 22.2；这是本轮唯一的产品改动。runs.py 未再改动。
+
+### 22.5 真实本地 SSE 服务的启动方式与客户端读取证据
+
+- 启动方式：**独立子进程** `python -m uvicorn backend.app:create_app --factory --host 127.0.0.1 --port <OS 分配的端口> --log-level warning`，cwd 为 backend/。子进程 env 中显式设置 **POSTGRES_DB=aiata_c4_test**（dotenv 不覆盖已存在的变量，因此无法被 .env 改回开发库）。
+- 就绪探测：真实 HTTP GET /api/does-not-exist，直到返回 401/404，上限 45s；进程提前退出则立即失败。
+- 客户端：**真实 HTTP 客户端 + 独立 transport**（httpx.AsyncHTTPTransport，回环地址真 socket），与被 patch 的执行器客户端完全分离——执行器客户端才走 MockTransport。
+- 目标 API：执行器侧仍用受控替身（按设计要求，不请求公网），在**第一个** /orders 请求处 park，直到测试释放。
+- 清理：finally 中释放门闩、取消执行任务、终止并回收 uvicorn 进程（terminate → wait 15s → kill 兜底）。实测套件结束后**无遗留 python 进程**（进程计数 0）。
+
+### 22.6 第一帧接收时的 Run 状态、受控请求状态与时序
+
+测试在读到 2 帧后、释放之前，直接断言了以下全部条件（全部通过）：
+
+| 断言 | 值 |
+|---|---|
+| 已收到的帧数 | 2（run.started, step.started）
+| 帧 id | [1, 2]
+| 受控请求已释放？ | **False**（release.is_set() is False）
+| 执行任务已结束？ | **False**（task.done() is False）
+| Run 在数据库中的状态 | **running**
+| 执行器已 park？ | **True**，且受控传输只收到 **1** 个请求 |
+
+> 顺序是**硬断言**，不是观察：帧在手时 release 仍为 False、run 仍为 running。响应若被整体缓冲，这两帧根本不会在释放前出现。
+
+### 22.7 SSE 后续事件与数据库记录的核对
+
+释放后继续读同一条流直到结束，然后与数据库逐项核对：**帧 id 序列 == run_events.seq 序列**、**帧 event 序列 == event_type 序列**、末帧为 run.completed、seq 1..n 稠密、全部属于冻结的 8 类、Run 终态为 **passed**。全部通过。
+
+### 22.8 测试结果（分别报告，均为本轮实测）
+
+| 项 | 结果 | 退出码 |
+|---|---|---|
+| **目标：取消竞态**（test_run_cancel_race.py） | **4 passed in 1.93s**（0 xfail） | 0 |
+| **目标：真实 HTTP SSE 实时性**（test_run_stream_live.py） | **1 passed in 4.96s** | 0 |
+| **C18 回归**（test_run_stream_and_cancel.py） | **10 passed in 2.49s** | 0 |
+| **全套 第 1 次** | **69 passed, 3 skipped in 16.04s** | 0 |
+| **全套 第 2 次** | **69 passed, 3 skipped in 15.97s** | 0 |
+| xfail / warning | **0 / 0** | — |
+
+两次全套结果一致，无竞争性抖动。3 项 skip 全部是 C15/C16 的 opt-in 真实模型用例（**未启用 RUN_DEEPSEEK_INTEGRATION，零真实模型调用**）。全套耗时从 38s 降到 16s，原因是两个会等超时的 xfail 探针已移除。
+
+### 22.9 数据库身份、schema 版本与行数
+
+- 写入前后均核验：**SELECT current_database() = aiata_c4_test**；alembic_version = **a4c1e8b27d93**；public 表 24 张。
+- 测试后实测：runs=0 run_scenarios=0 run_steps=0 run_assertions=0 run_events=0 run_evidence=0 plans=0 specs=0 environments=0 projects=0 guests=0。
+- **本轮没有发生被强杀导致的残留**：所有失败路径都走 teardown（含 xfail#1 的首次失败与 live 测试的首次试跑）。**未清空整库、未 TRUNCATE、未连接开发库、未迁移。**
+
+### 22.10 备份与哈希
+
+- **文档更新前备份**：D:\\_aiapi_progress_backup_20261017-114645\\（含 MANIFEST.txt），IDENTICAL=True。
+- **改动文件快照**：D:\\_aiapi_c20_backup_20261017-114645\\（run_executor.py、两个测试文件、新增 live 测试，均 identical=True）。
+- **更新前 SHA-256**：3B53C7DFD642ED9AB6234B2BAED5AC05F139CEE9F988B55F98836888E07881BC（208,475 字节）。
+- **更新后 SHA-256**：见 22.11。
+
+### 22.11 进度文档最终状态（本节写入后核验）
+
+- **本节写入完成时的 SHA-256**：ADA615AE21E3F06B9008CA7624B04B8DF60F2884AEAA49D564995FAE689B1BDB（仅表示写入完成时的状态）。
+- **更新前 SHA-256**：3B53C7DFD642ED9AB6234B2BAED5AC05F139CEE9F988B55F98836888E07881BC（208,475 字节）。
+
+### 22.12 仍未解决的限制
+
+1. **跨进程取消不中断在途请求**（C19 边界未变）：cancel_execution 只作用于本进程；多进程下仍靠步边界的状态检查，在途请求会跑完，但不会再写出误导性事件。
+2. **Scenario 结算后不写 finished_at**：沿用既有 skipped 行的约定（pending→skipped 同样不写），因此 skipped 的 Scenario 可能只有 started_at 没有 finished_at。这是既有约定，本轮未改；若将来要统一时长统计需单独决策。
+3. **取消不撤销目标服务器副作用**（设计事实）。
+4. **_settle_unfinished 有两个调用者**（取消路由与执行器），本轮未收敛为单一所有者。
+5. **live SSE 测试启动子进程**：约 5s、占用一个回环端口；失败时会终止进程，但若宿主机防火墙阻止回环监听则会失败（当前环境正常）。
+6. 审批权威仍在客户端（C16 结论未变）；完整浏览器闭环仍未验收。
+
+### 22.13 下一阶段建议（仅建议，未执行）
+
+**Phase 9.6 建议：Run 事件的对外契约收口复核 + 提交准备。**
+
+理由：C17–C20 已把 Run 的快照、执行、事件、取消、SSE 五段行为证据补齐，产品源码目前只累积了**已授权且有测试保护的改动**（run_executor.py、runs.py）。下一步价值不在继续加测试，而在：① 复核这四轮测试与产品改动是否构成一个可提交的整体；② 决定 run_executor.py 的取消结算是否收敛为单一所有者。
+依赖：① 提交需负责人明确授权；② 不得改冻结事件集合与 seq 机制；③ 进度文档仍是未提交的单一副本。
