@@ -2215,6 +2215,26 @@ async def cancel_run(session: AsyncSession, *, run_id: str) -> RunCancelResponse
         response = RunCancelResponse(**_run_fields(row, counts=counts))
 
         await session.commit()
+
+        if transition is not None:
+            # Order matters.  The transition and run.cancelled are committed above,
+            # so the cancellation is durable before anything is asked to stop; only
+            # then is the executor interrupted.  A run executing in another process
+            # is not reachable from here, which is why its own boundary check remains
+            # the mechanism that stops it.
+            from backend.services.run_executor import cancel_execution
+
+            cancel_execution(run_uuid)
+
+            # Whatever the interruption left behind is settled here, in this request,
+            # so the reply is not sent while rows the cancel froze are still running.
+            # _settle_unfinished is idempotent and never touches a step that finished
+            # or an assertion that was judged, so a run that had already stopped
+            # settles to exactly the same state.
+            from backend.services.run_executor import _settle_unfinished
+
+            await _settle_unfinished(session, run_uuid)
+            await session.commit()
     except IntegrityError as exc:
         # Rollback first, always: see `_translate_cancel_integrity_error`.
         await session.rollback()

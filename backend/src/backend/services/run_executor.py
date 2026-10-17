@@ -831,8 +831,18 @@ async def _settle_unfinished(session: AsyncSession, run_id: uuid.UUID) -> None:
         .values(status=SKIPPED)
     )
     await session.execute(
+        # "running" as well as "pending": a scenario the cancel caught
+        # had already started, and a terminal run holding a scenario that still
+        # claims to be running is a contradiction a reload would show.  Every
+        # other terminal run state settles its scenarios -- a pass or a fail goes
+        # through _finish_scenario -- so this is what makes a cancel join them.  A
+        # scenario that really passed or failed is neither pending nor running, so
+        # it is left alone.
         update(RunScenario)
-        .where(RunScenario.run_id == run_id, RunScenario.status == "pending")
+        .where(
+            RunScenario.run_id == run_id,
+            RunScenario.status.in_(("pending", "running")),
+        )
         .values(status=SKIPPED)
     )
 
@@ -1185,6 +1195,18 @@ async def _run_scenario(
                 }
             ]
 
+        if outcome is None and not await _still_running(session, run_id):
+            # The step came back, but the run stopped while it was on the wire.
+            # Recording it as a completion is the one thing that must not happen:
+            # the row is about to be settled as skipped, and a step.completed
+            # written here would land after the run terminal event and contradict
+            # the row it describes.
+            await _stop_interrupted_step(session, run_id=run_id, step=step)
+            await _stop_scenario(
+                session=session, run_id=run_id, scenario=scenario, started_any=started_any
+            )
+            return _ScenarioOutcome(status=SKIPPED)
+
         if outcome is not None:
             failure = outcome
             failed_step = step
@@ -1339,16 +1361,37 @@ async def _run_scenario(
     )
 
 
+async def _stop_interrupted_step(
+    session: AsyncSession, *, run_id: uuid.UUID, step: _Step
+) -> None:
+    """Settle the step a stop interrupted, before the loop abandons the scenario.
+
+    The same rule a request failure follows: a step that did not finish is
+    skipped, with the timings of the attempt that did not complete.  Without this
+    the row would be the only one left running inside a run the database already
+    calls cancelled -- and an event claiming it completed would be the last thing
+    the run ever said.  No commit here: the caller settles the scenario too, and
+    the two writes belong to one transaction.
+    """
+    await _finish_step(
+        session,
+        step,
+        status=SKIPPED,
+        now=datetime.now(timezone.utc),
+        duration_ms=0,
+    )
+
+
 async def _stop_scenario(
     *, session: AsyncSession, run_id: uuid.UUID, scenario: _Scenario, started_any: bool
 ) -> None:
     """Leave a scenario the way a cancellation found it.
 
-    The steps that never ran are skipped.  The scenario itself is only marked
-    skipped when nothing in it started: a scenario whose steps were already
-    running keeps the status it had, which is exactly what the console's own
-    reducer does with the same event -- the two views of a cancelled run have to
-    agree, or a reload contradicts the page it replaces.
+    The steps that never ran are skipped, and a step caught mid-flight is
+    abandoned.  The scenario itself is only finished here when nothing in it
+    started; a scenario that had really begun is settled by _settle_unfinished
+    along with the rest of the run, so the terminal state is decided in one
+    place rather than in two that could disagree.
     """
     await _skip_pending_steps(session, [scenario.id])
     await _abandon_step(session, [scenario.id])
@@ -1579,6 +1622,52 @@ async def _fail_run(run_id: uuid.UUID, *, code: str, detail: str) -> None:
         logger.exception("run %s: the executor failure could not be recorded", run_id)
 
 
+def cancel_execution(run_id: uuid.UUID) -> bool:
+    """Ask this process executor for a run to stop now.
+
+    A cancel is durable before this is called: the run row and run.cancelled are
+    committed by the caller.  Cancelling the task is what stops the step currently
+    on the wire instead of waiting for the next boundary check, so that step is
+    settled by the CancelledError handler rather than announced as a completion.
+
+    Returns whether there was a task here to interrupt.  False is not a failure:
+    the run may be executing in another process, or nowhere at all, and the cancel
+    itself has already been recorded either way.
+    """
+    task = _RUNNING_TASKS.get(run_id)
+    if task is None or task.done():
+        return False
+
+    task.cancel()
+    return True
+
+
+async def _settle_cancelled(run_id: uuid.UUID) -> None:
+    """Settle a run whose task was just cancelled, then let the cancel out.
+
+    The run row already says cancelled -- the route committed that before it asked
+    for the interruption -- so this only settles the tree.  No event is appended:
+    run.cancelled is the run last word, written by the cancel route, and a step
+    event written here would arrive after it.
+
+    Shielded on purpose.  After a cancellation every await inside a cancelled task
+    raises CancelledError again, and a task that is cancelled twice must still
+    leave the rows it already changed in a state that reads correctly.  The write
+    is idempotent, so a second attempt that does not happen changes nothing.
+    """
+    async def _settle() -> None:
+        async with AsyncSessionLocal() as session:
+            await _settle_unfinished(session, run_id)
+            await session.commit()
+
+    try:
+        await asyncio.shield(_settle())
+    except asyncio.CancelledError:
+        logger.warning("run %s: the settlement after a cancel was interrupted", run_id)
+    except Exception:
+        logger.exception("run %s: the settlement after a cancel failed", run_id)
+
+
 async def execute_run(run_id: uuid.UUID) -> None:
     """Execute a run.  Never raises: a run is left in a readable state either way.
 
@@ -1588,6 +1677,14 @@ async def execute_run(run_id: uuid.UUID) -> None:
     """
     try:
         await _execute(run_id)
+    except asyncio.CancelledError:
+        # The cancel route stopped this task on purpose.  The run is cancelled;
+        # what is left is to settle the rows the interruption froze, and then let
+        # the cancellation finish travelling -- swallowing it would tell asyncio a
+        # task it cancelled completed normally.
+        logger.info("run %s: the executor was cancelled and is settling", run_id)
+        await _settle_cancelled(run_id)
+        raise
     except Exception:
         logger.exception("run %s: the executor could not complete this run", run_id)
         await _fail_run(
