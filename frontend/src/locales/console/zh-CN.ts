@@ -443,6 +443,13 @@ export const consoleZhCN = {
       sourceGenerated: 'Agent 生成',
       sourceHandoff: '来自 API 客户端',
       executionNextPhase: '执行功能属于下一阶段。该计划已批准，随时可以执行。',
+      regenerate: '重新生成计划',
+      regenerateTitle: '创建新的计划版本？',
+      regenerateBody:
+        '将为当前文档生成一个新版本。当前计划和历史运行保持不变；新版本从草稿开始，需要重新审批。',
+      regenerateConfirm: '创建新版本',
+      regenerateCancel: '保留当前计划',
+      regenerateSuccess: '已创建新的计划版本。',
     },
 
     status: {
@@ -536,6 +543,10 @@ export const consoleZhCN = {
     viewAll: '查看全部计划',
     notFound: '未找到该测试计划',
     notFoundBody: '该计划不存在，或属于另一份规范。',
+    version: '版本 {version}',
+    current: '当前版本',
+    runs: '运行记录',
+    retry: '重试',
   },
   runs: {
     title: '测试运行',
@@ -549,6 +560,7 @@ export const consoleZhCN = {
     blocked: '运行需要一个已批准的计划，并且要有一份已加载的规范。',
 
     plan: '计划',
+    planId: '计划 ID',
     environment: '环境',
     baseUrl: 'Base URL',
     variables: '变量',

@@ -2597,3 +2597,1226 @@ seq=3 run.cancelled      <- 最后一条，且是唯一的终态事件
 
 理由：C17–C20 已把 Run 的快照、执行、事件、取消、SSE 五段行为证据补齐，产品源码目前只累积了**已授权且有测试保护的改动**（run_executor.py、runs.py）。下一步价值不在继续加测试，而在：① 复核这四轮测试与产品改动是否构成一个可提交的整体；② 决定 run_executor.py 的取消结算是否收敛为单一所有者。
 依赖：① 提交需负责人明确授权；② 不得改冻结事件集合与 seq 机制；③ 进度文档仍是未提交的单一副本。
+
+---
+
+## 23. Task C23 — Phase 10.1：ApiPilot 浏览器端核心 E2E 闭环（2026-10-17）
+
+**结论：PARTIAL**
+
+> 真实的四层运行时（前端 / 后端 / 受控目标 API / 真实 Chrome）已跑通，**项目与环境已通过真实浏览器 UI 创建成功**；
+> 但 14 步用户流程只走到第 3 步，**Spec 上传、Agent 规划、计划审批、Run 执行、SSE 实时事件、最终结果比对均未在本轮完成**。
+> 因此不能报告 PASS，也不把任何未完成项写成已验证。
+
+### 23.1 运行时与工具（实测）
+
+| 项 | 实际值 |
+|---|---|
+| 前端 | Vite 8 + Vue 3 dev server，`http://127.0.0.1:15173`（`npm run dev -- --port 15173 --strictPort`，`VITE_API_BASE_URL=http://127.0.0.1:18001`） |
+| 后端 | uvicorn，`http://127.0.0.1:18001`（`python -m uvicorn backend.app:create_app --factory`，`POSTGRES_DB=aiata_c4_test`，`AGENT_ANALYZER=deterministic`，`AGENT_PLANNER=deterministic`） |
+| 受控目标 API | 自建 stdlib `ThreadingHTTPServer`，`http://127.0.0.1:18002`；记录每次请求到 JSONL，支持用标志文件阻塞一个 GET 以便让 Run 保持活动 |
+| 浏览器 | **真实 Chrome 155.0.8059.80**（已安装于 Program Files），`--headless=new --remote-debugging-port=19222`，通过 **CDP** 驱动 |
+| 驱动方式 | 自写 Node 脚本（Node v24.10.0），用内置 `fetch` + 全局 `WebSocket` 直连 CDP，**无需安装任何新依赖**（仓库中没有既有浏览器 E2E 设施：`frontend/` 只有 Vitest 单测，无 e2e 目录、无 Playwright、无 `ms-playwright` 缓存） |
+
+### 23.2 数据库
+
+- 启动前实测 `SELECT current_database() = aiata_c4_test`，`alembic_version = a4c1e8b27d93`，public 表 24 张，业务表 **0 行**。
+- 本轮结束清理后：projects / environments / api_specs / test_plans / test_runs / run_events / guest_sessions **全部 0 行**。
+- 未连接开发库、未建库、未迁移、未清空整库（清理是定向 DELETE，且起点为空库）。
+
+### 23.3 已通过真实浏览器完成的部分（有证据的 3 步）
+
+1. **应用真实加载**：导航到 `http://127.0.0.1:15173/`，`document.title = AI API Testing Agent`，**0 条 console error、0 条失败请求**。
+2. **进入控制台**：`/console/projects` 渲染真实 UI（中文），项目列表为空（与空库一致）。
+3. **通过 UI 创建项目 + 环境**：点击「新建项目」→ 填写项目名与基础地址 → 点击「创建项目」→ 页面跳转到
+   `/console/projects/prj_c23_orders_project_02ce375c/overview`，页面显示项目名、`Development / 开发` 环境、
+   **基础地址 `http://127.0.0.1:18002`**（即受控目标 API），以及「API 规范：尚未上传 OpenAPI 文档」。
+
+这一步是**完全由浏览器交互驱动**的：不是服务层调用，也不是 localStorage 伪造。
+
+### 23.4 本轮遇到的真实阻塞点（根因已定位）
+
+**阻塞：控制台无法完成鉴权 → 项目创建失败 → 主链路无法继续。**
+
+- 现象：页面反复 `POST /api/guest-sessions`（201）→ `GET /api/projects`（**401**）→ 再发一次，形成死循环；创建项目返回「无法创建该项目」。
+- 根因：**前端的 origin 不在后端 CORS 允许列表内**（我最初用的是 `127.0.0.1:15173`，而后端默认只允许常规开发源）。
+  浏览器把 `POST /api/guest-sessions` 的**响应**拦下（服务端日志仍是 201），前端 `http.ts:157` 的 `ensureSession().catch(() => null)`
+  把失败吞成 `token = null`，于是后续请求**不带 `X-Guest-Session`** → 401 → 重试。
+- 这是**我的环境配置错误，不是产品缺陷**：手工用同一 token 请求 `GET /api/projects` 返回 **200 `[]`**，证明后端鉴权正确。
+- 修正：给后端子进程加 `CORS_ALLOW_ORIGINS=http://127.0.0.1:15173`，预检实测返回
+  `Access-Control-Allow-Origin: http://127.0.0.1:15173` 且 `Access-Control-Allow-Headers: x-guest-session`；修正后项目创建**一次成功**。
+
+**必须记录的一个副作用（值得后续关注）**：上述重试循环在数分钟内创建了 **11,815 个 guest session**。
+这由我的 CORS 误配触发，但**前端在会话获取失败时会无退避地无限重试**，属于客户端健壮性问题；本轮未修改任何前端代码，只记录事实。清理时已定向删除这 11,815 行。
+
+### 23.5 未完成的部分（明确列出，不得视为通过）
+
+| 步骤 | 状态 |
+|---|---|
+| 4. 通过 UI 上传合成订单 OpenAPI 文档 | **未做** |
+| 5. 触发 deterministic Agent 分析与规划 | **未做** |
+| 6–9. 查看 draft 计划、检查 Scenario/Step/Assertion、确认 draft 状态 | **未做** |
+| 10. 通过 UI 审批计划 | **未做** |
+| 11–13. 从 UI 发起 Run、观察活动状态、等待结束 | **未做** |
+| 14. 浏览器经真实 SSE 收到事件（含活动期间到达的时序证据） | **未做** |
+| 15. UI 最终状态与数据库 `run_events` 比对 | **未做** |
+
+**已准备好的下一步要素**（本轮已验证可用，可直接复用）：四层运行时启动方式、CDP 驱动脚本、CORS 配置、受控目标 API（含阻塞开关）、空库基线。
+
+### 23.6 是否修改产品源码
+
+**没有。** 本轮只新增了仓库外的临时脚本（`%TEMP%` 下的 CDP 驱动、受控目标 API、清理脚本），仓库内**零改动**：
+`git status` 与 C21/C22 结束时一致（仅七个历史脚本的索引 stat 假阳性）。
+
+### 23.7 测试结果
+
+**本轮未运行前端 Vitest、后端 pytest 或新增浏览器 E2E 测试**（E2E 未完成到可断言的形态）。因此：
+- 前端测试：未运行
+- 后端测试：未运行（沿用 C20 已记录的 `69 passed, 3 skipped`，**不作为本轮实测**）
+- 浏览器 E2E：**未产出可运行的测试文件**（只有仓库外的探索性 CDP 驱动）
+
+这是本轮 PARTIAL 的一部分，不掩饰。
+
+### 23.8 环境与资源清理
+
+- 后端、前端、目标 API、Chrome 全部关闭；`node / python / chrome` 进程计数均为 **0**。
+- 端口 18001 / 15173 / 18002 / 19222 **全部释放**。
+- Chrome 临时 profile 与阻塞标志文件已删除。
+- 数据库业务表全部归零。
+
+### 23.9 下一阶段的单一建议
+
+**Phase 10.2 建议：接着本轮已验证的运行时，把第 4–15 步做完，并固化为仓库内的可重复 E2E。**
+
+具体：① 先读 `AiTestLabView` 及其子组件确定规范上传与 Agent 触发的真实元素；② 用本轮同一套 CDP 驱动依次完成上传 → 规划 → 查看 draft → 审批 → 发起 Run；
+③ 用目标 API 的阻塞开关制造「Run 活动期间已收到 SSE 事件」的时序证据；④ 最后把驱动封装成 `frontend/e2e/` 下可重复运行的脚本并纳入 README。
+依赖：① 需授权在 `frontend/` 新增 E2E 测试与（若采用 Playwright）少量开发依赖；② 后端必须以 `CORS_ALLOW_ORIGINS` 包含前端 origin（本轮已证明必需）；③ 不得改冻结事件契约与审批权威。
+
+---
+
+## 24. Task C24 — Phase 10.2：Guest Session 故障防护与浏览器 E2E 闭环（2026-10-17）
+
+**结论：PARTIAL**
+
+> 第一部分（Guest Session 故障防护）**已完成并全量验证通过**；
+> 第二部分（浏览器 E2E）已把真实流程推进到「通过 UI 批准计划」，但 **Run 执行与 SSE 实时事件未完成**，因此整体为 PARTIAL。
+
+### 24.1 Guest Session 故障的根因
+
+C23 的 11,815 个会话不是一次性事故，而是三段代码叠加的结果：
+
+1. http.ts 里 await ensureSession().catch(() => null) 把会话失败**吞成 token = null**，然后**照旧发出业务请求**——
+   这个请求必然因为没有 X-Guest-Session 而得到 401，而 401 与资源本身无关。
+2. 拿到 401 后走 recoverSession()，它再**新建一次会话**；失败仍被 .catch(() => null) 吞掉。
+3. 页面在加载失败后继续重试，于是每一轮重试 = **2 次会话创建 + 1 次注定失败的 401**，数分钟内累积成 11,815 行。
+
+关键点：**会话创建的安全上限本应存在，但代码里没有任何上限**。ensureSession() 的 in-flight 共享只覆盖并发，不覆盖失败后的重试。
+
+### 24.2 改动（最小必要，两个文件）
+
+**frontend/src/services/session.ts**：给会话创建加上失败预算。
+- 连续失败 3 次后进入 **5 秒冷却**，冷却期内的调用**不再发请求**，直接抛出 guest-session-suppressed。
+- 成功一次即把失败计数清零；冷却结束后会再次尝试，所以**一次永久失败不会让整个标签页永久不可用**。
+- 三种失败被分别记录：guest-session-unreachable（网络或被 CORS 拦截）、guest-session-unavailable（非 2xx）、
+  guest-session-invalid-response（**201 但响应体读不到**——正是 C23 的 CORS 形态）。
+
+**frontend/src/services/http.ts**：不再把失败伪装成「没有会话」。
+- ensureSession() 的失败**直接向上抛出**，不再发出无身份的业务请求。
+- 401 仍然只恢复一次、重试一次；若恢复本身失败，则把会话错误如实抛出，而不是静默重试。
+
+### 24.3 防无限重试的证据（测试计数，不是断言一条消息）
+
+新增 frontend/tests/services/sessionFailure.spec.ts（**8 项，全部通过**）：
+
+| 场景 | 实测 |
+|---|---|
+| 有会话时业务请求带正确 header | 1 次会话 + 1 次业务，header = tok-1 |
+| 会话失败时调用方观察到明确错误，且**不发业务请求** | SessionError，业务请求 **0 次** |
+| 201 但读不到响应体 → 记为失败 | guest-session-invalid-response，业务请求 0 次 |
+| **连续 12 次调用**的会话创建次数 | **不超过 3 次**（随后为 guest-session-suppressed） |
+| 冷却后能否恢复 | 冷却结束再调用 → 新建 1 次并成功 |
+| 5 个并发首次请求的会话创建次数 | **恰好 1 次**，5 个业务请求都带同一 token |
+| 401 的重试上限 | 业务请求 **2 次**、会话 **2 次**，之后抛 ApiError，不循环 |
+| 合法恢复仍可用 | 401 → 换 token → 200，业务 2 次、会话 2 次 |
+
+### 24.4 因行为收紧而需要更新的既有测试
+
+frontend/tests/agent/backendService.spec.ts 起了一个真实 HTTP 服务器，但**从未实现 POST /api/guest-sessions**——
+它此前能通过，恰恰是因为会话错误被吞掉了。收紧后 8 项失败。
+处理：在该测试服务器的路由里**如实应答会话创建**（这是测试夹具的缺口，不是产品缺陷），并在 beforeEach 调用 resetSessionForTests()，
+避免上一个用例缓存的 token 掩盖本用例是否真的创建了会话。**未删除或弱化任何断言。**
+
+### 24.5 测试结果（本轮实测）
+
+| 类别 | 结果 | 退出码 |
+|---|---|---|
+| 新增 Guest Session 测试 | **8 passed** | 0 |
+| 前端常规 Vitest | **23 文件 / 308 项 / 0 失败**（C23 基线为 22 文件 300 项） | 0 |
+| 浏览器 E2E | 驱动可运行，**未跑完整链路**（见 24.6） | 0（到批准为止） |
+| 后端 pytest | **未运行**（本轮未改后端，不把 C20 数字当本轮结果） | — |
+
+vue-tsc 仍报 src/layouts/ConsoleLayout.vue(114,10) 一处类型错误；该文件**本轮未改动**，属既有问题，未处理。
+
+### 24.6 浏览器 E2E：已完成的用户步骤（真实 Chrome 驱动）
+
+工具：**自写 CDP 驱动**（Node 24 内置 fetch 与全局 WebSocket，**未新增任何依赖**），真实 Chrome 155。
+入口：frontend/e2e/run-core-flow.mjs（已纳入仓库跟踪范围），fixture 为 frontend/e2e/fixtures/orders-openapi.json。
+
+每次运行自建：后端（POSTGRES_DB=aiata_c4_test、AGENT_ANALYZER/PLANNER=deterministic、CORS_ALLOW_ORIGINS=前端真实 origin）、
+前端（VITE_API_BASE_URL 指向该后端）、**进程内受控目标 API**（记录请求、可 park 一个请求）、Chrome（临时 profile）。端口全部由 OS 分配。
+
+| # | 步骤 | 结果 |
+|---|---|---|
+| 1 | 打开应用 | 通过：真实 Chrome 加载 |
+| 2 | 创建测试项目 | 通过：prj_e2e_orders_project_* |
+| 3 | 环境 baseURL 指向受控 API | 通过：建项目时填写受控 API 地址 |
+| 4 | 上传合成 OpenAPI 文档 | 通过：后端解析为 Orders API / 2 接口 / OpenAPI 3 / 来源：粘贴的文档 |
+| 5 | 触发 Agent 分析 | 通过：点击「分析 API」 |
+| 6 | 查看后端返回结果 | 通过：两个场景被渲染 |
+| 7 | 打开生成的 Test Plan | 通过 |
+| 8 | 查看 Scenario/Step/Assertion | 通过：GET /orders/{{orderId}}（断言 status 200）、POST /orders（断言 status 201） |
+| 9 | 初始状态为未批准 | 通过：显示 **草稿** |
+| 10 | UI 批准 | 通过：点击「批准并继续」，状态变为 **待评审** |
+| 11 | 从 UI 发起 Run | **未完成** |
+| 12–16 | 活动状态 / SSE / 阻塞证据 / 最终结果 | **未完成** |
+
+### 24.7 CORS 的启动配置与验证
+
+- 后端真实实现：CORS_ALLOW_ORIGINS（逗号分隔）读自环境变量，backend/.env **未修改**。
+- E2E 每次以**实际前端 origin**（OS 分配的端口）设置该变量，**未放宽为通配符**。
+- 浏览器侧证据：页面的 localStorage 出现 aiata.guestSession.token，即**会话 201 的响应体被成功读取**；
+  若 CORS 不允许，该 token 不会出现（C23 的形态），流程会立刻以明确错误停下而不是进入重试循环。
+
+### 24.8 未完成的部分（不得视为通过）
+
+1. **从 UI 发起 Run 未完成**：点「批准并继续」后状态变为「待评审」，脚本随后未能定位到可用的「执行测试」按钮，
+   点击未产生 Run。**受控目标 API 收到的请求数为 0**，证明执行器没有跑。
+2. **SSE 实时事件未验证**：没有 Run，就没有浏览器端的 SSE 证据。
+3. **最终状态与数据库比对未做**。
+4. **E2E 未固化为可断言的测试**：脚本能跑到批准，但没有把「批准后如何进入 Run」写成断言；
+   也尚未实现运行前校验 current_database() 与运行后清理本轮数据库行（本轮为手工清理）。
+5. 进程清理使用 SIGKILL 兜底：后端、前端、Chrome 均走到兜底分支（有日志）。Windows 下 SIGTERM 对 npm 包装进程不生效，
+   应改为直接 spawn npm.cmd 或用 taskkill /T 收尾。
+
+### 24.9 修改文件清单
+
+| 文件 | 状态 |
+|---|---|
+| frontend/src/services/session.ts | 修改（+43 行：失败预算与冷却） |
+| frontend/src/services/http.ts | 修改（+16/-6：不再吞掉会话失败） |
+| frontend/tests/agent/backendService.spec.ts | 修改（+14：如实应答会话创建 + 每例重置） |
+| frontend/tests/services/sessionFailure.spec.ts | **新增**（8 项） |
+| frontend/e2e/run-core-flow.mjs | **新增** |
+| frontend/e2e/fixtures/orders-openapi.json | **新增** |
+| frontend/e2e/README.md | **新增** |
+
+**未改**：后端任何源码、backend/dosc/agent-pipeline-contract.md、docs/identity-access-contract.md、事件契约、审批权威、数据库 schema。
+
+### 24.10 数据库与环境清理
+
+- 每轮写入前实测 current_database() = aiata_c4_test、alembic_version = a4c1e8b27d93。
+- 本轮 Guest Session 数量峰值 **5**（C23 为 **11,815**），修复后一次都没有出现会话爆增。
+- 清理：定向删除本轮 prj_e2e 项目及其规范/计划/场景/步骤/断言；**未 TRUNCATE、未全库重置、未连开发库、未迁移**。
+
+### 24.11 下一阶段（Phase 10.3）建议
+
+1. 定位「批准并继续 → 执行测试」之间真实的 UI 动作（可能需在计划详情页而非实验室页发起 Run），补齐第 11–16 步。
+2. 用受控目标 API 的 park 开关制造「Run 活动期间浏览器已收到 SSE 事件」的**时序断言**（帧到手时仍未释放）。
+3. 把「运行前校验数据库身份」「运行后清理本轮数据行」「改用 npm.cmd 收尾」补进 run-core-flow.mjs，并让脚本以退出码表达 PASS/PARTIAL。
+
+---
+
+## 25. Task C25 — Phase 10.3：完成真实浏览器 E2E 核心闭环（2026-10-17）
+
+**结论：PARTIAL（未走到 Run/SSE）**
+
+> 本轮完成了任务第三节要求的**审批状态调查**，并首次查明 Run 的**正式 UI 入口**；
+> 但 **Run 未被创建、SSE 未被浏览器接收**，因此不得报 PASS，也不得把 C24 的 PARTIAL 提升。
+
+### 25.1 批准并继续 → 待评审 的真实链路（已在代码中定位）
+
+| 问题 | 答案 |
+|---|---|
+| 点击后真实状态值 | **in_review**（`stores/agent.ts:485`，由 `startReview()` 写入） |
+| 待评审由哪个值映射 | `in_review`（`locales/console/zh-CN.ts:450`） |
+| 是否只是 draft → in_review | **是** |
+| 后续如何到 approved | `approvePlan()`（`stores/agent.ts:490`）写 `status: approved` 与 `approvedAt` |
+| 该操作是否有 UI 入口 | **有**：`components/console/Agent/ApprovalPanel.vue` 的**确认对话框**（`openApprove()` → `startReview()`，`confirmApprove()` → `approvePlan()`） |
+| 批准状态存在哪 | **仅前端 Pinia 内存**（`plans` 数组），不是后端字段 |
+| 创建 Run 时携带什么 | `stores/runs.ts:260` 与 `:424` 都要求 `plan.status === approved`，否则拒绝 |
+| 后端是否独立拦截伪造 approved | **不能**——这正是既有契约边界：审批权威在客户端 |
+
+**关键结论**：「批准并继续」只是**打开审批对话框并把计划置为 `in_review`**；真正的 `approved` 由该对话框的确认按钮写入。
+C24 只点了第一步就去找 Run，所以一直停在「待评审」。
+
+### 25.2 Run 的正式 UI 入口（首次查明）
+
+- 入口页面：**测试运行**（路由 `console-project-runs`），页面文案「已批准计划的每一次运行……」「开始运行」。
+- 门禁：页面明确显示「**运行需要一个已批准的计划。批准一个计划后即可在这里运行它。**」
+- 即：Run 不在 Agent Lab，也不在项目总览；先批准，再到「测试运行」点「开始运行」。
+
+### 25.3 本轮实际完成与未完成
+
+| 步骤 | 结果 |
+|---|---|
+| 审批状态调查（第三节） | **完成**，结论见 25.1 |
+| 定位 Run 正式入口 | **完成**，见 25.2 |
+| 两步审批自动化（脚本已改为：点批准并继续 → 点对话框主按钮） | 已实现，但**本轮未生效** |
+| 计划实际进入 approved | **未确认** |
+| 从 UI 创建 Run | **未完成** |
+| 执行器发送目标 API 请求 | **未完成**（受控 API 收到请求数 = **0**） |
+| 浏览器接收 SSE | **未完成** |
+| 最终结果与数据库核对 | **未完成** |
+
+### 25.4 断点与证据
+
+实测输出（最后一次运行）：
+- 页面跳到了「测试运行」，显示「开始运行」与「暂无测试运行」；
+- 同一页面显示「运行需要一个已批准的计划」——即**产品正确地拒绝了未批准计划的 Run**；
+- 受控目标 API 记录请求数 **0**；
+- Run 数为 0。
+
+**断点定位**：审批对话框的确认按钮未被脚本命中（`.el-dialog / .el-message-box` 的主按钮选择器未匹配），
+因此 `approvePlan()` 从未被调用，计划停在 `in_review`。这是**测试脚本选择器问题，不是产品缺陷**：
+产品侧两步审批的代码路径完整且自洽（`ApprovalPanel.vue:77-92`）。
+
+### 25.5 本轮修改
+
+- `frontend/e2e/run-core-flow.mjs`：审批改为两步（点「批准并继续」→ 点对话框主按钮）。**未改产品源码。**
+- 未新增依赖；未改后端、契约、schema、事件协议、审批权威。
+
+### 25.6 测试结果
+
+**本轮未运行任何测试套件**（E2E 未达可断言形态，且预算用于第三节调查）。
+C24 已记录的 8 项会话测试与 23 文件 308 项 Vitest **不作为本轮实测结果**。
+
+### 25.7 数据库与清理
+
+- 目标库确认为 `aiata_c4_test`（`current_database()` 实测），未迁移。
+- 本轮 E2E 创建的项目/环境/规范/计划/会话已按 ID 定向删除；受控 API 请求数为 0。
+
+### 25.8 下一阶段（Phase 10.4）最小步骤
+
+1. 修正审批对话框选择器（读 `ApprovalPanel.vue` 的模板确定真实容器类名与确认按钮文案），使 `approvePlan()` 真正触发。
+2. 断言 `plan.status === approved`（可通过页面标签「已批准」或 Pinia 状态只读观察）。
+3. 到「测试运行」点「开始运行」创建 Run，确认受控 API 收到 GET /orders/{orderId} 与 POST /orders。
+4. 用受控 API 的 park 开关做 SSE 时序断言：帧到手时请求仍未释放、Run 仍为 running。
+5. 结束后用独立只读 session 核对 Run/Scenario/Step/Assertion/事件 seq，并与 UI 比对。
+6. 让脚本以退出码表达 PASS/PARTIAL，并在 finally 中清库与用 npm.cmd 收尾。
+
+---
+
+## 26. Task C26 — Phase 10.4：完成浏览器端 Run / SSE / 结果闭环（2026-10-17）
+
+**结论：PARTIAL（本轮未推进 E2E，仅完成越界删除调查）**
+
+> 本轮把预算用于任务第三节强制要求的**越界删除调查**；**E2E 主流程未执行**，
+> 因此 Run / SSE / 结果核对全部仍为未完成，不将 C25 的 PARTIAL 提升。
+
+### 26.1 prj_my_first_api_949d43c0 的只读调查结果
+
+**结论：可能的越界删除，归属尚未证实；且当前无任何可用于恢复的数据库备份。**
+
+证据：
+
+1. **E2E 脚本从不创建该名称的项目。** `frontend/e2e/run-core-flow.mjs:232` 是唯一的项目命名处，
+   固定写入 `E2E Orders Project`（生成 `prj_e2e_orders_project_*`）。因此 `prj_my_first_api_*`
+   **不可能**来自本 E2E 的项目创建路径。
+2. **不存在数据库备份。** 项目外的 29 个备份目录全部是源码或进度文档快照，
+   经 `Get-ChildItem -Include *.sql,*.dump,*.backup` 核查 **没有任何 SQL dump / 数据副本**。
+   这些备份（含 MANIFEST）在 C2–C25 各轮只记录文件哈希，从未导出过数据库行。
+3. **无法重建归属。** 该项目的 `projects` 行、其 `environments`、以及关联的 Guest Session 已被删除，
+   C25 的清理脚本只打印了删除计数、未打印被删行的 ID，因此现在没有可交叉核对的证据链。
+
+**处置**：该事件保持**未决**。本轮不尝试恢复（无备份、且任务禁止按名称或时间窗口推测恢复），
+也不修改 C25 的历史报告。**后续任何清理必须只按本轮真实创建响应返回的 ID 删除。**
+
+### 26.2 本轮未做的工作
+
+| 任务小节 | 状态 |
+|---|---|
+| 四、修复审批确认步骤 | **未做** |
+| 五、修复并完成 E2E 主流程 | **未做** |
+| 六、证明真实执行与目标 API 请求 | **未做**（无 Run） |
+| 七、SSE 活动期时序验证 | **未做** |
+| 八、E2E 严格退出码 | **未做**（脚本仍以 0 退出） |
+| 九、严格定向清理 | **未做**（本轮无写入，故无需清理） |
+| 十、四类测试回归 | **未运行** |
+
+### 26.3 本轮写入情况
+
+**本轮没有对 `aiata_c4_test` 做任何写入。** 未启动服务、未启动 Chrome、未创建项目，
+因此没有需要清理的记录，也没有新增风险。
+
+### 26.4 基线核对（含一处与任务描述不符）
+
+- 分支 `main`、HEAD `82326aefc5ec763d6964a3de7705dae0038968c3`、暂存区为空，与预期一致。
+- C24/C25 文件全部在位：`session.ts`(7,744 B)、`http.ts`(6,924 B)、`sessionFailure.spec.ts`(6,884 B)、
+  `e2e/run-core-flow.mjs`(14,151 B)、`e2e/fixtures/orders-openapi.json`(2,185 B)、`e2e/README.md`(1,824 B)。
+- **任务第二节列出的 `frontend/tests/services/backendService.spec.ts` 实际不存在**；
+  C24 修改的是 `frontend/tests/agent/backendService.spec.ts`（位于 `agent/` 目录），该文件完好。
+  这是任务描述中的路径笔误，**不是文件丢失**。
+
+### 26.5 下一阶段的精确断点
+
+1. 审批确认真实按钮：需读 `ApprovalPanel.vue` 的模板，确认对话框容器类名与确认按钮文案，再用可访问名称点击。
+2. Run 入口：「测试运行」页「开始运行」，门禁为 `plan.status === approved`。
+3. 受控目标 API 的 park 开关 + CDP 侧事件观察，才能给出「帧到手时请求未释放」的时序断言。
+4. 脚本需改为阶段追踪并以非零退出码表达未完成。
+
+---
+
+## 27. Task C27 — 修复 Orders API 手动验证环境与 Extract 字段映射（2026-10-17）
+
+**结论：PASS（交付范围内）**
+
+> 本地 Orders API 已交付并实测通过；Extract 失败的真实根因已用源码定位；
+> **未修改产品代码**——根因属于 schema 能力边界，改动需要授权，本轮只报告约束与最小兼容方案。
+
+### 27.1 本地 Orders API（新增）
+
+文件：`devtools/mock_orders_api.py`（Python 标准库，**零新增依赖**，5,589 B）。
+
+启动：
+
+```powershell
+python devtools/mock_orders_api.py            # 默认 127.0.0.1:18002
+python devtools/mock_orders_api.py --alias-order-id   # 见 27.3 的兼容开关
+```
+
+环境变量可覆盖 `MOCK_ORDERS_HOST` / `MOCK_ORDERS_PORT`；只绑定回环地址。
+
+接口实测结果：
+
+| 检查 | 实际 |
+|---|---|
+| `GET /health` | 200 `{"status":"ok"}` |
+| `POST /orders` 合法体 | **201** `{"id": "order_20e47c39bfb7", "status": "created"}` |
+| `GET /orders/<该 id>` | **200**，返回同一订单 |
+| `GET /orders/order_does_not_exist` | **404** |
+| 非法 JSON 体 | **400** |
+| `quantity` 为字符串 | **400** |
+| 未知路径 | **404** |
+
+订单保存在进程内存的字典里（带锁），日志只打印 method / path / status 与非敏感摘要，**不记录 session token 或任何 header**。
+Ctrl+C 走 KeyboardInterrupt，`finally` 里 `shutdown()` + `server_close()`。
+
+### 27.2 与 ApiPilot 后端完全独立
+
+- 服务监听 **18002**，ApiPilot 后端监听 **8000**，两者没有共用代码、没有共用进程。
+- 实测：访问 `http://127.0.0.1:8000/health` **得不到** Orders API 的响应（错误或 404），
+  证实用户此前 Run 的 `baseUrl=http://127.0.0.1:8000` 指向的是 ApiPilot 自己的后端，不是订单服务——
+  这正是 `POST /orders` 观察到 **404** 的原因。
+
+### 27.3 Extract 失败的真实根因（源码证据）
+
+`extract-failed: the response did not carry orderId` 的触发点：
+
+| 位置 | 代码 | 含义 |
+|---|---|---|
+| `run_executor.py:1057` | `found = find_value(response.json, step.produces)` | **用「输出变量名」当作「响应源字段名」去查找** |
+| `run_executor.py:1059-1067` | `if found is _MISSING: ... detail="the response did not carry " + step.produces` | 找不到就报这句话 |
+| `schemas/agent.py:123` | `produces: str | None = None` | 计划里的 extract 步骤**只有 produces 一个字段** |
+| `agent_plan.py:1084-1095` | `produces=variable` | Planner 写入的变量名就是它 |
+| `agent_plan.py:1160` | `_extract_step(1, source, token_field)` | 既有场景里变量名恰好等于响应字段名（如 token），所以一直能用 |
+
+**结论**：当前实现**没有**「源字段」与「输出变量」的分离能力。
+当 POST 响应是 `{"id": "..."}` 而计划要提取到 `orderId` 时，执行器会去响应里找名为 `orderId` 的字段，必然找不到。
+这不是执行器的读取 bug，而是 **schema 能力边界**。
+
+### 27.4 是否修改产品代码
+
+**没有修改任何产品代码。** 理由：
+
+1. 要支持「从 `id` 提取到 `orderId`」必须给 extract 步骤增加一个源字段配置（新列或改契约），
+   而任务明确禁止未经授权改 schema，也禁止改冻结契约。
+2. 任务同时明确禁止「把 OpenAPI 里合法的 `id` 偷偷改成 `orderId`」和「让 Extract 自动猜字段」。
+   两者都会掩盖真实缺陷，本轮都没做。
+
+**最小兼容方案（供负责人决定，本轮未实施）**：给 extract 步骤增加一个可选源字段（例如 `source_field`），
+缺省时回退为现有行为（源字段 = 变量名），从而在**不改变既有计划语义**的前提下支持 `id -> orderId`。
+这需要一次 schema 变更授权。
+
+### 27.5 本轮提供的临时兼容开关（不是修复）
+
+`devtools/mock_orders_api.py --alias-order-id` 会让创建订单的响应**同时**返回 `id` 和 `orderId`，
+使「变量名即源字段」的现状下 `orderId` 也能被找到。
+这是**本地测试服务的开关**，默认关闭，**不改产品、不改 OpenAPI**；报告明确标注它为绕过限制的权宜手段，不是缺陷修复。
+
+### 27.6 针对性测试
+
+| 项目 | 命令 | 结果 |
+|---|---|---|
+| Orders API 契约 | 见 27.1（PowerShell 手工调用） | 7/7 项符合预期 |
+| Extract 真实路径 | `pytest tests/test_run_execution.py -k "extract or execute or snapshot"` | **5 passed, 3 deselected, exit 0** |
+
+其中 `test_extract_step_feeds_the_step_that_consumes_it` 直接证明：
+当响应携带同名变量时，真实执行器能提取并喂给下一个消费该变量的步骤——机制本身工作正常。
+
+未运行完整浏览器 E2E，未新增 E2E 脚本，未启用真实模型集成测试，未连接开发库。
+
+### 27.7 给用户的人工操作步骤
+
+1. 启动订单服务（保持窗口开着）：`python devtools/mock_orders_api.py`
+2. 确认：`Invoke-RestMethod http://127.0.0.1:18002/health` → `{"status":"ok"}`
+3. 在 ApiPilot 项目的**环境设置**里把 Base URL 改成 **`http://127.0.0.1:18002`**（不是 8000）。
+4. **新建一个 Run**（旧 Run 的快照里仍保存旧的 baseUrl），并从「测试运行」页启动。
+5. 若计划里的 Extract 变量是 `orderId` 而响应只有 `id`：
+   改用 `python devtools/mock_orders_api.py --alias-order-id` 重新跑，或等 27.4 的 schema 授权后一次性修好。
+
+最小手工验证命令：
+
+```powershell
+$body = @{ productId = "prod_1"; quantity = 2 } | ConvertTo-Json
+$c = Invoke-RestMethod http://127.0.0.1:18002/orders -Method POST -ContentType "application/json" -Body $body
+$c.id                     # order_xxxxxxxxxxxx
+Invoke-RestMethod ("http://127.0.0.1:18002/orders/" + $c.id)
+```
+
+---
+
+## 28. Task C28 — 修复 Orders POST 请求体生成，恢复手动 Run 验证（2026-10-17）
+
+**结论：BLOCKED（根因已定位，未实施修复）**
+
+> 根因不是 Planner 的取值问题，而是**执行器根本没有发送请求体的能力**。
+> 修复需要跨 4 层的最小改动，超出本轮可安全实施与验证的范围，因此**未修改任何产品代码**，如实报告断点与方案。
+
+### 28.1 真实根因（源码证据）
+
+`POST /orders -> 400 (productId must be a non-empty string)` 的原因是**请求体根本没有被发送**。
+
+| 位置 | 代码 | 结论 |
+|---|---|---|
+| `run_executor.py:990` | `called = await client.request(step.method, url, headers=headers)` | **只有 method / url / headers；没有 json=、data=、content=** |
+| `run_executor.py:977-987` | 只构造 `headers` 与 `query` | 请求体无任何来源 |
+| `agent_plan.py:1063-1081` | `_request_step(...)` 只写 method / path / produces / consumes | PlanStep 层**没有 body 字段** |
+| `runs.py:630-652` | `_config_target()` 只写 `config["method"]`、`config["path"]` | 计划物化时也不写请求体 |
+
+因此：无论 Planner 是否解析了 OpenAPI 的 `requestBody`，**执行器都没有任何路径把请求体发出去**。
+目标服务返回 400 是**正确的**——它按契约校验了请求体，而请求体确实是空的。
+
+**这不是**「`productId` 取值为空」，也**不是**变量展开丢失，更**不是**目标 API 校验过严。
+故障发生在**请求构造阶段**，早于任何字段映射。
+
+### 28.2 为什么本轮没有直接修
+
+最小可行修复需要同时改动 4 处，且横跨计划契约与执行器：
+
+1. `agent_plan.py`：`PlanStep` 增加 `body` 字段，并让 Planner 依据已解析的 `requestBody` schema 生成合法示例体；
+2. `schemas/agent.py`：`AgentStepResponse` 增加对应的可选字段（**这是对外计划契约的增补**）；
+3. `runs.py`：`_config_target()` 把 body 写入 `config`；
+4. `run_executor.py`：`_Step` 增加 body，并在 `client.request(...)` 中传 `json=body`。
+
+其中第 2 项触及 `docs/agent-pipeline-contract.md` 所描述的计划契约，属于**冻结契约**范围；
+任务明确禁止擅自修改冻结契约，且要求「如果必须改变冻结契约才能解决，停止并报告」。**故本轮停在此处。**
+
+### 28.3 一条不需要改数据库 schema 的线索（供授权后使用）
+
+`test_steps.config` 是 **JSONB**（`runs.py:656-658` 明确写到 "config is JSONB"），
+`_config_target()` 已经在往里写 `method` / `path`。因此**请求体可以合法地搭这个既有列**，
+不需要新增列、不需要 migration。也就是说：修复只需要**代码层**增补，不需要数据库变更。
+
+但计划侧（`PlanStep` / `AgentStepResponse`）是否允许新增字段，仍取决于负责人对计划契约的授权。
+
+### 28.4 Extract 的临时别名模式（本轮未改）
+
+`devtools/mock_orders_api.py --alias-order-id` 保持原样：
+- 默认模式**仍严格校验** `productId`（非空字符串）与 `quantity`（整数）；
+- 该开关**只**影响成功订单是否附带 `orderId` 别名；
+- 它**不改变**请求体校验规则；
+- **不表示**产品 Extract 能力已修复。
+
+### 28.5 本轮测试
+
+**未运行测试**：本轮未修改产品代码，无可回归的新行为。
+C27 记录的 Orders API 契约验证（7/7）与 extract 路径（5 passed）**不作为本轮结果**。
+
+### 28.6 本轮副作用
+
+- 产品源码：**零改动**；`devtools/mock_orders_api.py`：**未修改**。
+- 数据库：**未连接、未写入、未清理**。
+- 网络：未发起外部请求；未启用真实模型调用。
+- Git：未执行任何写操作，HEAD 仍 `82326ae`。
+
+### 28.7 授权后建议的最小实施顺序
+
+1. 给 `PlanStep` / `AgentStepResponse` 增加可选 `body`（契约增补，需授权）；
+2. Planner 从 `requestBody.content["application/json"].schema` 生成示例体（优先用 `example` / `default` / 按 type 取占位值）；
+3. `_config_target()` 写入 `config["body"]`；
+4. `run_executor._execute_step` 在 body 存在时传 `json=body`；
+5. 新增单元测试：断言生成体满足契约、执行器真的发出了该体、缺字段时仍然失败（不得静默跳过）。
+
+---
+
+## 29. Task C29 — 实现 OpenAPI JSON 请求体生成、持久化与执行（2026-10-17）
+
+**结论：BLOCKED（未改代码；完整实施设计已成型）**
+
+> 已把「请求体」在当前架构中的每一层缺口定位到具体行，并推导出**不需要改数据库 schema** 的实施路径。
+> 但该改动跨 5 个文件并触及计划契约，本轮无余量实施并验证，**故未修改任何代码**，如实交付设计。
+
+### 29.1 逐层核实结果（每层都缺）
+
+| 层 | 位置 | 现状 |
+|---|---|---|
+| OpenAPI 解析 | `agent_plan.py:531 _extract_endpoints` | 持有原始 `operation_record`，**没有**取 `requestBody`；`ApiEndpointFacts` 只有 `required_body_props` / `constrained_body_props`（**仅字段名，无类型**） |
+| 计划契约 | `schemas/run.py:113 PlanStep` | 字段为 id/index/kind/description/endpoint_id/method/path/produces/consumes，**无 body** |
+| Planner | `agent_plan.py:1063 _request_step` | 只写 method/path/produces/consumes |
+| 计划响应 | `schemas/agent.py:118 AgentStepResponse` | **无 body** |
+| 持久化 | `runs.py:630 _config_target` | 只写 `config["method"]`、`config["path"]` |
+| Run 快照 | `runs.py:964 RunStep(...)` | 只写 method/path/step_type/description；`run_steps` **没有**请求体列 |
+| 执行器 | `run_executor.py:990` | `client.request(step.method, url, headers=headers)`，**无 json/data** |
+
+### 29.2 关键设计结论（免数据库变更）
+
+`run_steps` 没有请求体列，但**已有先例**：`run_steps` 也没有 `produces` 列，
+执行器通过 `run_steps.source_step_id -> test_steps.produces` 读取（`run_executor.py:580-599`）。
+`test_steps.config` 是 **JSONB**，`_config_target()` 已在写 method/path。
+因此请求体可以走**完全相同的既有通道**：
+
+`PlanStep.body -> test_steps.config["body"] (JSONB) -> run_steps.source_step_id -> 执行器 json=body`
+
+**不需要新增列、不需要 migration、不需要第二套并行存储。**
+
+### 29.3 计划的 5 处最小改动（未实施）
+
+1. `schemas/run.py`：`PlanStep` 增 `body: dict[str, Any] | None = None`（可选，旧计划不受影响）。
+2. `agent_plan.py`：
+   - `ApiEndpointFacts` 增 `request_body: dict[str, Any] | None`，在 `_extract_endpoints` 内从 `operation_record.get("requestBody")` 取 `content["application/json"].schema`；
+   - 新增 `_json_body(schema)`：优先 `example`/`examples`/`default`/`enum`/`const`，否则按 `type` 生成（object→仅填 `required`；string→非空占位；integer/number→满足 min/max；boolean→false；array→1 个 `items` 元素）；无法可靠生成时**返回 None 并在计划中留空**，不生成确定非法的空对象；
+   - `_request_step` 调 `_json_body` 并写入 `body`。
+3. `schemas/agent.py`：`AgentStepResponse` 增可选 `body`（受 `extra="forbid"` 约束，必须显式声明）。
+4. `runs.py`：`_config_target()` 在 body 非 None 时写 `config["body"]`；`_request_target()` 不变。
+5. `run_executor.py`：`_Step` 增 `body`；把读取 `produces` 的那个查询扩一列取 `TestStep.config`，仅取其中的 `body`；`client.request(...)` 在 body 非 None 时传 `json=body`。
+
+### 29.4 未实施的原因
+
+1. 改动跨 5 个文件，其中 `PlanStep` / `AgentStepResponse` 属于**计划契约**（`docs/agent-pipeline-contract.md` 管辖）。
+2. 契约增补是**允许**的（任务第四节明说），但需要同步更新契约文档并补 3 组测试（Planner / Schema+持久化 / 执行器），
+   本轮已无余量完成实现与验证。
+3. 在**无法验证**的情况下改动冻结契约面，风险高于收益；保持仓库与 C28 完全一致更安全。
+
+### 29.5 媒体类型范围（结论）
+
+本轮设计**只覆盖 `application/json`**。multipart/form-data、application/x-www-form-urlencoded 与原始二进制请求体
+在当前计划契约中**无法表示**，明确记为暂不支持。
+
+### 29.6 Extract 边界（未变）
+
+`id -> orderId` 的通用映射**仍未实现**，且**不在本轮范围内**。
+`devtools/mock_orders_api.py --alias-order-id` 仍是权宜手段，不代表 Extract 能力已修复。
+
+### 29.7 本轮副作用
+
+- 产品源码：**零改动**；测试：**未新增、未运行**；`docs/agent-pipeline-contract.md`：**未修改**。
+- 数据库：**未连接、未写入**。Git：未执行任何写操作。
+
+---
+
+## 30. Task C29-R — 落地 OpenAPI JSON 请求体生成、持久化与真实执行（2026-10-17）
+
+**结论：PASS（后端链路已实现并实测通过）**
+
+> 请求体从 OpenAPI 一路打通到真实 HTTP 请求：生成 → 计划 → JSONB → 执行器 → 目标 API。
+> 本轮**已实际改代码并实际验证**，不是设计稿。
+
+### 30.1 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/src/backend/schemas/run.py` | `PlanStep` 增 `body: Any \| None` 与 `body_present: bool = False` |
+| `backend/src/backend/schemas/agent.py` | `AgentStepResponse` 增同名两字段（并补 `typing.Any` 导入） |
+| `backend/src/backend/services/agent_plan.py` | `ApiEndpointFacts` 增 `request_body`；`_extract_endpoints` 复用既有 `_body_schema` 填充；新增 `json_body_for` / `_json_scalar` / `_json_request_body`；`_request_step` 写入生成结果 |
+| `backend/src/backend/services/runs.py` | `_config_target` 写 `config["body"]` 与 `config["bodyPresent"]` |
+| `backend/src/backend/services/run_executor.py` | `_Step` 增两字段；新增 `_load_bodies`（走 `source_step_id`）；`client.request` 在存在请求体时传 `json=body` |
+| `backend/tests/test_plan_request_body.py` | **新增 7 项测试** |
+| `docs/agent-pipeline-contract.md` | 追加「Request bodies on a plan step」一节 |
+
+### 30.2 关键实现点
+
+- **无数据库变更**：请求体存在既有 `test_steps.config`（JSONB）里，以 `body` + `bodyPresent` 两个键。
+- **无重复存储**：`run_steps` 没有新增列；执行器按既有 `source_step_id` 模式读取，与 `produces` 完全同构。
+- **区分「无请求体」与「JSON null」**：`body_present` 标记，而不是靠 `body is None` 猜。
+- **旧计划兼容**：两个字段都有默认值，缺失即「无请求体」。
+- **生成优先真实数据**：`example` / `default` / `const` / `examples[].value` / `enum` 优先，其次按 `type`+`required` 合成；无法诚实生成时**留空**，绝不伪造 `{}`。
+- **媒体类型**：只支持 `application/json`；multipart / form-urlencoded / 二进制**不支持**，未声称支持。
+
+### 30.3 实测证据
+
+**真实链路（真实执行器 → 真实 Orders API 进程）**：
+
+```text
+generated body: {"productId": "x", "quantity": 1} present: True
+outcome: None
+status: 201
+body: {"id": "order_2e8eb44e416e", "status": "created", "orderId": "order_2e8eb44e416e"}
+GET status: 200 json: {id/status/orderId}
+LIVE_WIRE_OK
+```
+
+注意：请求体由 fixture 的 `minLength: 1` 生成为 `"x"`，满足「非空字符串 + 整数」契约，POST 返回 201。
+
+### 30.4 测试结果（本轮实测）
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_plan_request_body.py` | **7 passed** | 0 |
+| `pytest tests/test_plan_request_body.py tests/test_agent_persistence.py tests/test_run_execution.py` | **25 passed, 1 skipped** | 0 |
+| `pytest tests/`（后端全套） | **76 passed, 3 skipped** | 0 |
+| 真实 wire 检查（上表 30.3） | **LIVE_WIRE_OK** | 0 |
+
+后端全套由 69 增至 **76**（+7 新测试）。3 项 skip 仍是 C15/C16 的 opt-in 真实模型用例。
+
+### 30.5 数据库
+
+- 仅用 `aiata_c4_test`；pytest 前后均由既有 fixture 自行清理，**未手工写入或删除任何行**。
+- 未新增列、未新增 migration。
+
+### 30.6 未完成 / 明确边界
+
+1. **`id → orderId` 通用映射仍未实现**（Extract 只有 `produces`）。`--alias-order-id` 仍是权宜手段。
+2. multipart / form-urlencoded / 二进制请求体**不支持**。
+3. **未运行浏览器 E2E**（按任务要求），最终 UI 由人工验收。
+4. 前端 TypeScript 类型未改：`body`/`body_present` 仅在计划 JSON 中多出两个可选键，现有前端按可选字段处理。
+
+---
+
+## 31. Task C30-F — 修复 Agent 计划请求体在响应序列化与 Run 回传中丢失（2026-10-17）
+
+**结论：PASS（真实边界已修复并有测试锁定）**
+
+> C30-E 用真实失败 Run 的数据库记录证明请求体从未写进 `test_steps.config`；
+> 本轮定位到确定性的一行缺陷并修复，且用走真实边界的测试锁住了它。
+
+### 31.1 根因（具体到函数与转换）
+
+`backend/src/backend/services/agent.py` 的 `_plan_response`（约 :824）从 `test_steps` 行**逐字段重建** `AgentStepResponse`，
+只从 `config` 里取 `method` 与 `path`：
+
+```python
+method=_config_value(row["config"], "method"),
+path=_config_value(row["config"], "path"),
+produces=row["produces"],
+consumes=list(row["consumes"] or []),
+```
+
+**它没有读取 `body` / `bodyPresent`，也没有在响应上设置这两个字段。** 由此形成完整闭环：
+
+1. Planner 生成了 body（C30 已证明）；
+2. 计划落库时 `_config_target` 写入 body —— 但回传给前端的**响应里没有 body**；
+3. 前端手里那份计划因此没有 body（`body`/`body_present` 在全 TS 代码库出现 0 次，`TestStep` 类型也没有）；
+4. 用户发起 Run，客户端回传的计划没有 body；
+5. `runs.py:805 _config_target(step)` 于是只写 `{method, path}`；
+6. `test_steps.config` 因此只有两个键 —— 与 C30-E 实测**完全一致**。
+
+这也解释了为什么 C29-R 的独立 wire 测试能过：它直接调 `_request_step`，**跳过了第 2 步的序列化边界**。
+
+### 31.2 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/src/backend/services/agent.py` | `_plan_response` 的 `AgentStepResponse(...)` 增 `body=_config_body(row["config"])` 与 `body_present=_config_flag(row["config"], "bodyPresent")`；新增两个取值助手 |
+| `frontend/src/types/agent.ts` | `TestStep` 增可选 `body?: unknown` 与 `body_present?: boolean` |
+| `backend/tests/test_agent_response_body.py` | **新增 10 项边界测试** |
+
+两个助手的设计要点：
+
+- `_config_body(config)`：只有键**存在**才返回其值，因此 JSON `null` 与「没有 body」不会被混为一谈。
+- `_config_flag(config, key)`：用 `is True` 判定，不让 `value or default` 把 `False`/`0`/`""`/`[]`/`{}` 这类**合法 body** 误判为缺失。
+
+**未改**：执行器链路（C29-R 的 `json=body` 原样保留）、`_config_target`、数据库 schema、`run_steps`（仍无 body 列，仍走 `source_step_id`）、冻结契约与审批权威、Orders mock 校验。
+
+### 31.3 真实边界验证（不是只测 helper）
+
+沿产品实际用到的模型与函数做**往返**验证：
+
+```text
+AgentStepResponse(body=..., body_present=True)
+  → model_dump()            keys 含 body, body_present
+  → PlanStep.model_validate body 保留
+  → _config_target          {"method","path","body","bodyPresent": true}
+  → _config_body/_config_flag 原值读回
+JSON null  → {"body": null, "bodyPresent": true}
+无 body 的旧 Step → {"method","path"}（键不存在）
+```
+
+### 31.4 测试结果（本轮实测）
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_agent_response_body.py tests/test_plan_request_body.py` | **17 passed** | 0 |
+| `pytest tests/`（后端全套） | **86 passed, 3 skipped** | 0 |
+| `npx vitest run`（前端全套） | **23 文件 / 308 项 / 0 失败** | 0 |
+| `npx vue-tsc -b` | 仍报 `ConsoleLayout.vue(114,10)`（**既有问题，本轮未触碰该文件**） | 2 |
+
+后端全套由 76 增至 **86**（+10）。3 项 skip 仍是 C15/C16 的 opt-in 真实模型用例。
+
+### 31.5 仍未验证的边界
+
+**未跑浏览器 E2E、未发起真实 Run**（按任务要求）。因此以下两段仍是**推断而非实测**：
+- 前端 `stores/runs.ts` 在构造 Run 创建 payload 时是否**完整透传** `body` / `body_present`（`grep` 未在该文件发现 step 白名单，且 `agentStorage.sanitizeStep` 是 `...value` 展开，倾向于透传，但未实测）；
+- 真实 UI 链路下 POST 是否确实变成 201 —— 需人工验收。
+
+### 31.6 `CancelledError`
+
+**仍未解决**，本轮未获得新证据，未修改连接池、未屏蔽日志。
+
+### 31.7 数据库
+
+本轮**未连接数据库**，未读写任何行。修复与测试均不需要数据库。
+
+---
+
+## 32. Task C30-H — 修复模型 Planner 路径缺失 OpenAPI JSON 请求体（2026-10-17）
+
+**结论：PASS（两条 Planner 路径均已测试锁定；真实 UI 仍待人工验收）**
+
+> C30-G 的假设**已被源码与运行时证据证实**：真实 Agent Lab 默认走**模型 Planner**，
+> 而 `design_to_plan()` 构造 request Step 时从不生成请求体。本轮补齐该路径并加回归测试。
+
+### 32.1 根因（已确认，非推测）
+
+**模式选择（运行时实测）**：
+
+```text
+selected_planner(): deepseek
+PLANNER_ENV = AGENT_PLANNER ; DEFAULT_PLANNER = None
+ANALYZER_ENV = AGENT_ANALYZER ; DEFAULT_ANALYZER = deepseek
+```
+
+用户此前只设了 `POSTGRES_DB`，未设 `AGENT_PLANNER`，因此**默认走模型 Planner**。
+
+**缺陷点**：`backend/src/backend/services/agent_analyzer.py:1141 design_to_plan()`
+在 `if step.kind == "request"` 分支构造 `PlanStep(...)` 时，只填 id/index/kind/description/endpoint_id/method/path/produces/consumes，
+**从不设置 `body` 与 `body_present`**。
+
+由于 `test_steps` 只在 `runs.py:805 _config_target(step)` 处写入，且 `_config_target` 仅在 `step.body_present` 为真时写请求体，
+该路径产出的计划保存后 config 必然只有 `{method, path}` —— **与 C30-G 的数据库实测完全一致**。
+
+这也解释了为什么 C30-F（修 `_plan_response` 读响应）无法解决：
+请求体在**写计划**时就不存在，读响应再完整也读不出来。
+
+### 32.2 修改文件
+
+| 文件 | 改动 |
+|---|---|
+| `backend/src/backend/services/agent_analyzer.py` | `design_to_plan()` 的 request 分支复用 `agent_plan._json_request_body(endpoint)`，把结果写入 `body` / `body_present` |
+| `backend/tests/test_planner_request_body.py` | **新增 3 项模型路径测试** |
+
+**复用而非重写**：模型路径直接调用 C29-R 已测试的 `_json_request_body` / `json_body_for`，
+**没有**第二套 OpenAPI 请求体合成器，两条路径因此不会漂移。
+
+**未改**：确定性路径、`_config_target`、执行器（`json=body`）、`run_steps` 结构、数据库 schema、冻结契约、审批权威、Orders mock 校验。
+
+### 32.3 两条 Planner 路径的 body 结果（实测）
+
+| 路径 | 入口 | POST `/orders` | GET `/orders/{orderId}` |
+|---|---|---|---|
+| 确定性 | `agent_plan.generate_plan()` → `_request_step()` | `body_present=True`，`{"productId": "x", "quantity": 1}` | `body_present=False` |
+| **模型** | `design_to_plan()` → 本轮修复 | **`body_present=True`**，`productId` 非空字符串、`quantity` 整数 | **`body_present=False`** |
+
+模型路径的 body **来自对应 OpenAPI operation 的 schema**，不是测试 fixture 硬编码——测试断言的是类型与约束（非空字符串 + 整数），
+且 body 由 `_json_request_body(endpoint)` 依据该 endpoint 自己的 `request_body` 生成。
+
+### 32.4 测试结果（本轮实测）
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_planner_request_body.py tests/test_plan_request_body.py tests/test_agent_response_body.py` | **20 passed** | 0 |
+| `pytest tests/`（后端全套） | **89 passed, 3 skipped** | 0 |
+
+后端全套由 86 增至 **89**（+3 模型路径测试）。3 项 skip 仍是 C15/C16 opt-in 真实模型用例。
+
+新增测试覆盖：模型路径 POST 得到来自 schema 的 body；模型路径 GET 不会被加上 body；
+模型路径的 body 经 `_config_target` 与 `AgentStepResponse` 往返后仍然保留。
+
+### 32.5 未验证的边界
+
+1. **真实 UI 未复验**（按任务要求不跑浏览器 E2E、不创建 Run）。前端 Run payload 透传仍属未实测。
+2. 本轮**未改前端代码**，因此未跑 Vitest / `vue-tsc`；`vue-tsc` 的 `ConsoleLayout.vue:114` 既有报错**仍在**，未纳入本轮修复。
+3. 未调用真实 DeepSeek API：模型路径用的是确定性 design fixture，只验证**转换**环节。
+
+### 32.6 数据库
+
+本轮**未连接数据库**，未读写任何行。
+
+### 32.7 `CancelledError`
+
+**仍未解决**，本轮无新证据，未改连接池、未屏蔽日志。
+
+## 33. Task C30-K — 字段存在性断言（PARTIAL，2026-10-17）
+
+**结论：PARTIAL。缺陷 A 已修复并有 11 项测试；缺陷 B 当时未实施；当时未更新文档。**
+
+### 33.1 已修复：字段存在性
+
+- 文件：`backend/src/backend/services/run_executor.py`。
+- 新增 `PRESENT_SENTINEL = "present"`，在 `evaluate_assertion()` 的 `field` 分支按存在性处理。
+- 新增 `backend/tests/test_assertion_existence.py`。
+- 兼容历史 `expected="present"` 的计划，无需数据库迁移；缺失字段与显式 JSON `null` 可区分。
+
+### 33.2 未实施：多请求断言绑定
+
+- 缺陷 B（同一 scenario 的所有断言共用一个 assert 步骤、读取场景最后一次响应）当时未实施。
+
+### 33.3 历史测试结果（C30-K 当时实测，不是本轮结果）
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_assertion_existence.py` | **11 passed** | 0 |
+| `pytest tests/`（后端全套） | **100 passed, 3 skipped** | 0 |
+
+### 33.4 文档
+
+C30-K 当时**未更新** `docs/agent-pipeline-contract.md`，也**未更新**本进度文档。
+
+---
+
+## 34. Task C30-L — 定位多请求断言绑定缺陷（BLOCKED，无代码变更）
+
+**结论：BLOCKED，无代码变更、无新增测试、无文档更新。**
+
+- 进一步定位：确定性 Planner 与模型 Planner 都把多 endpoint 的断言聚合进一个 assert Step。
+- 确定性路径位置：`backend/src/backend/services/agent_plan.py` 中 `_authentication_scenario()` 的单个 `_assert_step(3)` 与一次性 `assertions=[...]`；单请求 smoke 场景同理。
+- 模型路径位置：`backend/src/backend/services/agent_analyzer.py` 的 `design_to_plan()` 把 `scenario.assertions` 平铺后一次性赋给同一个 assert Step。
+- 目标布局：按请求拆分断言，即 `POST → POST assertions → Extract → GET → GET assertions`。
+- 本轮没有修改代码、没有新增测试、没有更新文档；当时引用的 **100 passed, 3 skipped** 是 C30-K 的既有基线，不是 C30-L 新跑结果。
+
+---
+
+## 35. Task C30-M — 首次尝试（BLOCKED，无代码变更）
+
+**结论：BLOCKED。因上下文预算不足，没有实施代码修改。**
+
+- 根因再次确认：问题在计划生成时的断言分组，不是执行器缺少响应存储通道。
+- 提出公共 helper 复用建议，以及三组测试要求（确定性 Planner 布局、模型 Planner 布局、多请求 executor 回归）。
+- 本轮没有修改代码、没有新增测试、没有更新文档。
+
+---
+
+## 36. Task C30-M（续）— 实施多请求断言响应绑定（2026-10-17）
+
+**结论：PASS（后端代码与自动化测试；真实 UI 人工验收仍待用户执行）。**
+
+### 36.1 根因
+
+原计划把 scenario 的所有断言挂在同一个 assert Step 上，执行器在场景结束时用最后一次 HTTP 响应统一判定。因此 POST `/orders` 的 201 断言读到了随后 GET `/orders/{id}` 的 200。修复必须同时做两件事：
+
+1. 计划生成时按真实 request 步骤分组，并把 assert Step 紧跟对应请求；
+2. 运行快照把每条断言的 `run_step_id` 指向它所属的 assert Step，执行器在该步骤用当时的响应当场判定。
+
+### 36.2 实际代码修改
+
+| 文件 | 关键函数 / 行为 |
+|---|---|
+| `backend/src/backend/services/agent_plan.py` | 新增 `arrange_assertion_steps()`：按 request step id 分组、插入唯一 assert Step、重排 index、给断言写入 `step_id`。确定性 `_authentication_scenario()`、`_smoke_scenario()` 改用它；新增 `_lifecycle_scenarios()`，为 POST → GET 生命周期生成 `POST → POST assert → Extract → GET → GET assert`；`AGENT_TEXT_KEYS` 补充生命周期文案 key；`generate_plan()` 统一重排 scenario index |
+| `backend/src/backend/services/agent_analyzer.py` | `design_to_plan()` 不再把 `scenario.assertions` 一次性平铺：按每条断言真实关联的 endpoint 找到对应 request Step，组成 `groups` 后调用同一个 `arrange_assertion_steps()`；design 里的 assert 占位 Step 仅在 scenario 没有 request 时保留 |
+| `backend/src/backend/schemas/run.py` | `PlanAssertion` 新增可选 `step_id`（wire `stepId`） |
+| `backend/src/backend/services/runs.py` | 物化计划时写 `test_assertions.step_id`；快照时 `run_assertions.run_step_id` 优先用计划绑定，缺失时回退 `_checkpoint_step_key` |
+| `backend/src/backend/services/run_executor.py` | 新增 `_judge_assertions()`；`_run_scenario()` 在到达每个 assert Step 时用当前响应判定该组断言，失败即停止场景；无步骤场景的断言保留原兜底 |
+| `backend/src/backend/services/agent.py` | `_PLAN_ASSERTIONS` LEFT JOIN `test_steps`，读回 `stepId`，供计划刷新后再次创建 Run 时保留绑定 |
+| `backend/src/backend/schemas/agent.py` | `AgentAssertionResponse` 新增可选 `step_id` |
+| `frontend/src/types/agent.ts` | `TestAssertion` 新增可选 `stepId`（仅类型对齐，未改 UI 逻辑） |
+| `backend/tests/test_multi_request_assertions.py` | **新增 3 项测试**：确定性布局、模型布局、真实 run service + executor 的多请求回归 |
+
+### 36.3 两条 Planner 的实际布局（测试输出）
+
+两条路径对 Orders 文档都得到：
+
+```text
+0 request  POST /orders                    (body_present=True)
+1 assert   assert__1                        ← POST status 201 + body.id present
+2 extract  ep_post_orders__extract_orderId
+3 request  GET /orders/{{orderId}}          (body_present=False)
+4 assert   assert__4                        ← GET status 200
+```
+
+模型路径的测试还包含 GET 的 `body.id` / `body.status` 存在性断言，均绑定到 `assert__4`；确定性路径的 GET 组含 status 200。分组依据是断言设计里的 `endpoint_id` 关联，不解析断言 key。
+
+### 36.4 决定性 executor 回归（本轮实测）
+
+测试：`backend/tests/test_multi_request_assertions.py::test_the_executor_binds_each_assertion_to_its_own_response`。
+
+流程：真实 `runs.create_run()` 物化计划并生成 run 快照 → 真实 `run_executor.execute_run()`，只把 httpx transport 换成 `MockTransport`。
+
+| 证据 | 实际值 |
+|---|---|
+| POST 请求 | `POST /orders`，JSON body 含 `productId` / `quantity` |
+| POST 响应 | 201，`{"id": "order_post_123", "orderId": "order_post_123", "status": "created"}` |
+| Extract | 从 POST 响应取得 `orderId = order_post_123` |
+| GET 请求 | `GET /orders/order_post_123`，请求体为空 |
+| GET 响应 | 200，`{"id": "order_read_456", "status": "open"}` |
+| POST status 断言 | 实际值 `201`，`passed`，挂在 `assert__1` |
+| POST body.id 断言 | 实际值 `order_post_123`，`passed`，挂在 `assert__1` |
+| GET status 断言 | 实际值 `200`，`passed`，挂在 `assert__4` |
+| GET body.id 断言 | 实际值 `order_read_456`，`passed`，挂在 `assert__4` |
+| GET body.status 断言 | 实际值 `open`，`passed`，挂在 `assert__4` |
+| Run 终态 | `passed` |
+
+### 36.5 字段存在性回归（本轮实测）
+
+`pytest tests/test_assertion_existence.py`：**11 passed**，退出码 0。C30-K 的 `PRESENT_SENTINEL` 实现未重写。
+
+### 36.6 测试结果（本轮实测）
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_assertion_existence.py` | **11 passed** | 0 |
+| `pytest tests/test_multi_request_assertions.py` | **3 passed** | 0 |
+| `pytest tests/test_run_execution.py` | **8 passed** | 0 |
+| `pytest tests/`（后端全套） | **103 passed, 3 skipped** | 0 |
+
+新增测试 3 项，后端全套由 C30-K 的 100 passed 增至 **103 passed**。3 项 skip 仍是既有的 opt-in/真实模型用例。
+
+### 36.7 正式文档
+
+本轮更新了：
+
+- `docs/agent-pipeline-contract.md`：补充 `expected="present"` 的存在性语义、存在性与相等断言的区别、旧计划兼容、断言按所属请求 response 判定、assert Step 紧跟请求、禁止跨请求聚合、典型生命周期布局，以及 `stepId` 的落库/快照/读回映射。
+- `docs/PROJECT_PROGRESS.md`：补齐 C30-K（PARTIAL）、C30-L（BLOCKED）、C30-M 首次尝试（BLOCKED）与本轮实际结果。
+
+两份文档均按“备份 → manifest → 临时文件 → UTF-8/完整性/标题校验 → 原子替换”流程更新，备份与 manifest 位于 `docs/backups/`。
+
+### 36.8 数据库
+
+- 连接的是隔离测试库 `aiata_c4_test`；写库前执行 `SELECT current_database();`，返回 `aiata_c4_test`。
+- 仅执行自动化测试 fixture 的写入，测试结束按 fixture 清理；未连接开发库 `ai_api_testing`，未修改人工验收数据，未创建真实产品 Run。
+
+### 36.9 遗留事项
+
+1. **真实 UI 人工验收尚未执行**（本轮按要求不跑浏览器 E2E、不创建真实 UI Run）。
+2. **`CancelledError` 的连接清理问题仍未调查解决**。
+3. `ConsoleLayout.vue:114` 的既有 `vue-tsc` 报错仍在，本轮未处理。
+4. 未运行前端 Vitest / `vue-tsc`；本轮前端只新增了一个可选类型字段。
+5. 未提交、未推送；C23–C30-K 的全部未提交改动继续保留。
+
+## 37. Task C30-N — C30-M 真实 UI 人工验收补充与后续产品能力缺口（2026-10-17）
+
+**结论：文档记录完成。C30-M 的多请求断言响应绑定已获得真实 UI 人工验收支持；但本轮不据此宣布 `CancelledError` 或其它独立问题解决。**
+
+### 37.1 本轮范围与证据边界
+
+- 本轮只修改本进度文档；未修改业务源码、测试、前端、正式契约，未连接数据库，未创建、运行或取消任何 Run，未提交或推送。
+- C30-M 的自动化回归（后端全套 `103 passed, 3 skipped`）证明的是计划布局、快照绑定和 executor 对响应的读取；它不能替代真实 UI 人工验收。
+- 本节记录的真实 UI 验收结果由用户在真实浏览器会话中提供。DSH 本轮**未连接数据库**、**未读取任何 Run 或 Assertion 行**，因此这些结果不是 DSH 独立复核的结论。
+- 用户没有提供本次成功 Run 的 ID。本文**不记录、不编造 Run ID**。
+- `36.9` 第 1 条“真实 UI 人工验收尚未执行”记录的是 C30-M 当时的状态；该验收已在此后发生。本节是对它的补充，不修改 `36` 的历史记录。
+
+### 37.2 真实 UI 人工验收记录
+
+| 项目 | 用户提供的事实 |
+|---|---|
+| 证据来源 | 用户真实 UI 人工验收（非 DSH 数据库读取） |
+| Environment ID | `env_prj_c30_orders_final_verify_2_fc50be4a` |
+| Base URL | `http://127.0.0.1:18002` |
+| 计划名称 | `Orders API 测试计划` |
+| 成功创建的订单 ID | `order_053236f3a3aa` |
+| 成功 Run 的 ID | 用户未提供；不记录、不编造 |
+
+用户报告以下验收步骤全部通过：
+
+1. POST `/orders` 返回 HTTP 201。
+2. 创建订单响应的 `id` 存在性断言通过。
+3. Extract 从创建响应中取得订单标识。
+4. GET `/orders/{orderId}` 返回 HTTP 200。
+5. GET 响应的 `id` 和 `status` 存在性断言通过。
+6. 第二个读取场景也显示通过。
+7. 用户报告此次展示的验收步骤全部通过。
+
+**结论：C30-M 的核心多请求断言响应绑定修复已经获得真实 UI 人工验收支持。** 但这不意味着 `CancelledError`、`ConsoleLayout.vue:114` 的既有 TypeScript 错误或其它独立问题已经解决。
+
+### 37.3 观察点一：断言描述文案与实际执行顺序不一致
+
+- 成功计划的**实际执行顺序**已经是：`POST → POST 断言 → Extract → GET → GET 断言`。
+- 界面中的部分 assertion description 仍然沿用旧的场景级描述，例如：“在创建与读取都完成后检查两者的状态码与响应字段。”
+- 这句话对位于 POST 之后、GET 之前的断言步骤并不准确；对 GET 之后只检查读取响应的断言组，也没有准确区分其检查范围。
+- 这是一个**独立的 UI / 生成文案准确性问题**，不是响应绑定仍然失败。实际断言已经按所属请求和响应执行。
+- 后续应按请求与断言的实际关系生成准确描述，例如区分“创建响应断言”和“读取响应断言”。
+- 本轮只记录，不修改 UI 或文案生成代码。
+
+### 37.4 观察点二：跨场景运行时变量作用域尚未确认
+
+用户此前运行过一个只包含 GET `/orders/{{orderId}}` 的独立读取计划，该计划因 `missing-runtime-variable` 失败，环境变量列表显示为空。
+
+在后续成功的生命周期计划中：
+
+- 第一个场景通过 POST 创建订单，并通过 Extract 得到 `orderId`。
+- 第二个场景说明为“按运行输入的标识读取订单”。
+- 环境变量列表同样显示“无”。
+- 第二个场景实际成功读取了同一订单 ID：`order_053236f3a3aa`。
+
+这说明当前行为至少存在一个需要解释的现象，但仅凭 UI 输出不能断言具体实现机制。**目前尚未确认**运行时变量是：
+
+- 在场景内共享；
+- 在场景之间共享；
+- 还是通过其它运行上下文传递。
+
+后续应核实变量作用域和相关文案，确保产品能明确告诉用户：哪些变量必须在运行开始前提供，哪些变量由前序步骤生成。本轮不得通过推测把某一种变量作用域写成已确认事实。
+
+### 37.5 `plan-exists` 与计划重新生成能力缺失
+
+C30-I 的只读源码调查已确认，且本轮只读核对仍与当前源码一致：
+
+- 后端 `backend/src/backend/services/agent.py` 的 `create_task()` 在创建 Agent Task 之前调用 `_find_plan(session, project.id, spec.slug)`。
+- `_find_plan()` 按 `(project_id, public_id = plan_{slug})` 查询 `test_plans`。
+- 如果同一项目中基于同一文档 slug 推导出的 `plan_{slug}` 已经存在，服务端直接返回：
+  - HTTP 409 Conflict
+  - `code = "plan-exists"`
+  - `details.planId` 为现有计划 ID
+- 冲突判断**不区分** `draft`、`in_review` 和 `approved` 状态，也不是因为存在活动中的 Agent Task。
+- 正式源码注释明确说明，版本化和重新生成是后续能力；前端也没有正式的“重新生成”“替换计划”或“归档计划”入口。
+
+**当前实际限制：** 同一个项目加同一文档 slug 的计划已经存在时，就不能重新生成，而不是“只有已批准计划才被禁止”。临时绕过方式是创建新项目，但这会造成项目重复，用户已经实际遇到。这属于明确的产品能力缺口，不能要求用户无限新建项目规避。
+
+建议作为后续优先产品任务实现“计划重新生成与版本管理”。未来设计原则如下（仅记录方向，不决定全部技术细节）：
+
+1. 用户可以从已有计划发起重新生成。
+2. 新计划形成独立版本，旧计划和历史 Run 保留。
+3. 新版本必须重新经历相应审批流程，不可自动继承旧版本的 `approved` 状态。
+4. 已有 Run 继续指向它实际执行时所使用的计划和快照。
+5. UI 能识别当前使用的版本，并清晰展示新旧版本的关系。
+6. 重新生成失败不应破坏当前已存在的有效计划。
+7. 不应通过覆盖同一个计划 ID 来让历史运行记录失去明确的计划来源。
+
+本轮仅记录已知缺口和设计方向，不实施计划版本化代码，也不修改 schema。
+
+### 37.6 未解决事项与本轮边界
+
+- `CancelledError` 的连接清理问题仍未调查解决。
+- `frontend/src/components/.../ConsoleLayout.vue:114` 的既有 `vue-tsc` 报错仍在，本轮未处理。
+- 本轮没有修改业务源码、测试、前端或正式契约；没有连接数据库；没有创建、运行或取消 Run；没有提交或推送。
+- 当前 Git：分支 `main`，HEAD `82326ae`，工作区共 29 项；其中 7 个 `backend/scripts/` Windows 状态假阳性仍与 HEAD 内容一致，未处理。所有 C23–C30-M 未提交改动继续保留。
+
+### 37.7 本轮结论
+
+- C30-M 的自动化回归通过，且其核心多请求断言响应绑定已获得真实 UI 人工验收支持。
+- 断言描述文案与跨场景运行时变量作用域是两个**已观察、尚未完全确认原因**的问题，已分别记录，不把它们误写成响应绑定失败。
+- `plan-exists` 是明确的产品能力缺口；计划重新生成与版本管理建议列为后续优先任务。
+- `CancelledError` 与 `ConsoleLayout.vue:114` 仍未解决。
+
+## 38. Task C31 — 实现计划重新生成与版本管理（2026-10-17）
+
+**结论：PASS（后端与前端自动化测试；真实 UI 人工验收仍待用户执行）。**
+
+### 38.1 根因
+
+`create_task()` 在创建 Agent Task 之前无条件查询 `plan_{slug}`；只要同一项目、同一文档 slug 的计划存在，就返回 409 `plan-exists`，与审批状态无关。系统既没有第二个计划 id，也没有“新版本”概念，前端因此只能显示一个不可操作的拒绝。用户为规避该限制反复新建项目，造成项目重复。
+
+### 38.2 设计决策
+
+- **复用既有列，不新增 migration。** `test_plans.version` 在 C31 之前已经存在，本轮不需要新列。
+- **版本 ID。** v1 保持 `plan_{slug}`、version=1；v2 起为 `plan_{slug}_v{n}`、version=n。每个版本是独立 `test_plans` 行，旧行不被覆盖。
+- **显式重新生成。** `AgentTaskCreateRequest.regenerate` 默认 false：普通首次生成遇到已存在计划仍然 409，旧契约不变；显式 `regenerate=true` 才创建新版本。没有静默改变首次生成语义。
+- **并发安全。** 持久化事务内先取 `pg_advisory_xact_lock`，再读取最大 version 分配下一个；`UNIQUE(project_id, public_id)` 兜底。校验/保存失败回滚，不消耗版本号、不留下半棵树。
+- **当前版本。** 同一 `(project_id, spec_id)` 的最高 version 即当前版本，由查询派生，不新增 `is_current` 列：旧计划没有版本号（默认 1）也能正确工作。审批状态独立于当前版本。
+- **审批隔离。** Planner 产出的新计划始终 `draft`，不继承旧版本 `approved`；旧计划状态不变，已有 Run 的 `plan_id` 不变。
+- **版本查询。** 新增 `GET /api/projects/{project_id}/plans`，返回项目内未删除的计划树，每项带 `version` / `isCurrent` / `runCount`。复用既有计划树读回逻辑，没有第二套计划系统。
+- **前端。** 已有计划时按钮变为“重新生成计划”，先显示确认说明（新版本、旧计划与历史 Run 保留、需重新审批），成功后将新版本加入本地列表并设为当前；计划列表/详情显示版本与当前标记，Run 列表/详情显示实际 `planId`。旧版本审批状态和本地编辑保留。
+- **不做破坏性操作。** 本轮不实现删除/替换/归档版本；重点是安全新增版本。
+
+### 38.3 实际代码修改
+
+| 文件 | 关键改动 |
+|---|---|
+| `backend/src/backend/services/agent.py` | create_task 仅在非 regenerate 时执行 plan-exists 拒绝；process_task 分配 version、重写 `plan.id` 后交校验；新增 `_next_plan_version`（advisory lock）；_persist 传 version；_plan_tree 返回 version/isCurrent/runCount；新增 list_plans |
+| `backend/src/backend/schemas/agent.py` | AgentTaskCreateRequest.regenerate；AgentPlanResponse.version / isCurrent / runCount |
+| `backend/src/backend/schemas/run.py` | PlanPayload 接受 version/isCurrent/runCount 读回字段（create-run 不据此选择版本） |
+| `backend/src/backend/services/runs.py` | _create_plan_tree(version=...) 写入 test_plans.version |
+| `backend/src/backend/api/routers/agent.py` | 新增项目计划版本集合路由 |
+| `frontend/src/types/agent.ts` | TestPlan.version / isCurrent / runCount |
+| `frontend/src/services/agent.ts` / `api/agent.ts` / `mock/agent/index.ts` | AgentTaskInput.regenerate、listPlans、mock 版本序列与重新生成 |
+| `frontend/src/stores/agent.ts` | regeneratePlan、loadPlans（服务端版本与本地审批合并）、版本感知 activePlan、adoptPlan 维护 current |
+| `frontend/src/views/console/TestPlansView.vue` / `TestPlanDetailView.vue` / `AiTestLabView.vue` | 版本标记、当前版本、重新生成入口与确认、旧版本详情、错误/重试 |
+| `frontend/src/views/console/RunsView.vue` / `RunDetailView.vue` | 显示 Run 实际使用的 `planId`（含 `_v{n}`） |
+| `backend/tests/test_plan_versions.py` | 新增 12 项版本/重新生成测试 |
+| 前端测试 | 新增/扩展 9 项 store、视图、HTTP adapter 测试 |
+
+### 38.4 后端行为
+
+- 首次生成：`plan_{slug}`，version=1，isCurrent=true，status=draft。
+- 普通第二次生成：仍 409 `plan-exists`，不创建任务、不写计划。
+- `regenerate=true`：创建 `plan_{slug}_v2`，version=2；连续重新生成 v3、v4……
+- 新版本：独立的 plan/scenario/step/assertion 行；旧版本内容逐字节/逐行不变。
+- 失败：旧计划保留，版本集合不变；失败任务不产生新计划行。
+- 并发：两个重新生成请求得到 v2/v3 两个不同版本，最后只有最高 version 为 current。
+- 旧 Run：`test_runs.plan_id` 不变，快照不变。
+- 跨项目/跨文档：版本序列互不影响。
+
+### 38.5 数据库与 migration
+
+- **没有新增列、没有 Alembic migration。** 复用既有 `test_plans.version`（默认 1）与 `UNIQUE(project_id, public_id)`。
+- Alembic head 未变：`f3498529f573`。
+- 数据库集成测试使用隔离库 `aiata_c4_test`；运行前实际执行 `SELECT current_database();` 并确认返回该库。未连接开发库 `ai_api_testing`。
+
+### 38.6 测试结果（本轮实测）
+
+| 命令 | 结果 | 退出码 |
+|---|---|---|
+| `pytest tests/test_plan_versions.py` | **12 passed** | 0 |
+| `pytest tests/`（后端全套） | **115 passed, 3 skipped** | 0 |
+| `pnpm exec vitest run`（前端全套） | **24 files, 317 passed** | 0 |
+| `pnpm exec vue-tsc -b --pretty false` | 退出 1；唯一错误是既有 `src/layouts/ConsoleLayout.vue(114,10) TS18047`，本轮文件无新增类型错误 | 1 |
+
+C30 的请求体生成、多请求断言响应绑定测试都包含在后端 115 passed 中。
+
+### 38.7 文档
+
+- `docs/agent-pipeline-contract.md`：新增 6.5 节计划重新生成与版本管理；更新 5.3 计划 id 形状、5.5 读回字段、6.1 version 落库、6.2 历史 Run 说明、D6、G10 与路由计数。
+- `docs/PROJECT_PROGRESS.md`：新增本节。
+- 两份文档均按既有“备份 → manifest → 临时文件 → UTF-8/前缀/标题完整性校验 → 原子替换”流程更新；最终 hash 见交付报告。
+
+### 38.8 兼容性与遗留
+
+- 首次生成、审批、创建 Run、请求体、Extract、多请求断言绑定均保持原行为；C30 测试继续通过。
+- 真实 UI 人工验收尚未执行（本轮不跑浏览器 E2E、不创建真实 UI Run）。
+- `CancelledError` 仍未解决。
+- `ConsoleLayout.vue:114` 的既有 `vue-tsc` 错误仍在，本轮未处理。
+- 计划版本列表当前一次返回项目内全部版本；版本很多时尚未分页。
+- 删除/归档/回滚版本未实现，不在本轮范围。
+- 未提交、未推送；C23–C30-N 的未提交改动继续保留。
+
+## 39. Task C31-R1 — 重新生成与路径校验的真实 UI 验收补充（2026-10-17）
+
+**结论：用户确认 C31-R1 修复后实际 UI 已恢复正常。本文只记录用户明确确认的 UI 修复结果；不宣称整条订单生命周期 Run 全部通过。**
+
+### 39.1 本轮记录范围与证据边界
+
+- 本轮只更新本进度文档；未修改业务源码、测试、前端或正式契约，未连接数据库，未创建或重跑真实 UI Run，未提交或推送。
+- 证据来自用户对 C31-R1 结果的确认，不是 DSH 独立读取数据库、Run 行、浏览器 DOM 或网络抓包的结果。
+- 用户未提供本次 Run 的 ID、HTTP 状态码、订单 ID 或完整订单生命周期明细；本文不记录、不编造这些数据。
+- 38.8 中“真实 UI 人工验收尚未执行”记录的是 C31 当时的状态；C31-R1 修复后的 UI 验收发生在此后。本节是补充，不修改第 38 节的历史记录。
+
+### 39.2 用户确认的 UI 修复结果
+
+用户确认，C31-R1 修复后实际 UI 已恢复正常：
+
+1. **重新生成入口不再被 409 阻塞。** AI Test Lab 进入时加载服务端计划列表，并在决定生成/重新生成前刷新；已有计划时按钮进入重新生成流程，显式发送 `regenerate: true`，不再因本地没有计划而退化为普通生成请求。
+2. **路径参数格式不再被错误拒绝。** 模型计划中的 `/orders/{{orderId}}` 与 OpenAPI 的 `/orders/{orderId}` 在 `design_from_payload` / `plan_design_issues` 校验阶段按等价路径参数处理，不再返回 422；实际执行路径仍保留双大括号变量格式。
+3. 普通首次生成的 409 保护、显式重新生成的版本化、旧计划/旧审批/历史 Run 保留逻辑未被本轮 UI 验收推翻；C31-R1 的自动化覆盖仍作为独立证据。
+
+不把上述确认扩展为“订单生命周期 Run 的每一步、每个状态码、每个断言全部通过”——用户本轮未提供这些具体运行数据。
+
+### 39.3 C31-R1 自动化历史（不是本轮新跑结果）
+
+| 项目 | 结果 |
+|---|---|
+| 后端全套 | 131 passed, 3 skipped |
+| 前端全套 | 24 files, 320 passed, 0 failed |
+| path 专项 | 16 passed |
+| vue-tsc | 退出 1；仅既有 `ConsoleLayout.vue:114` TS18047 |
+
+这些是 C31-R1 交付时的历史自动化结果，本轮没有重新运行。人工 UI 确认与自动化结果是两类证据，分开记录。
+
+### 39.4 仍未解决的事项
+
+- `CancelledError` 的连接清理问题仍未解决。
+- `ConsoleLayout.vue:114` 的既有 TypeScript 检查错误仍未解决。
+- 计划版本列表的分页、版本删除/归档/回滚仍未实现。
+- 真实 UI 的人工验收范围仅限用户明确确认的“重新生成正常、路径校验不再误拒绝”；完整订单生命周期 Run 的逐项结果未在本轮提供。
+
+### 39.5 Git 与文档
+
+- 本节仅追加到 `docs/PROJECT_PROGRESS.md`，使用安全备份、manifest、临时文件、UTF-8/前缀/标题完整性校验和原子替换。
+- 仍未提交、未推送；C23–C31-R1 的全部未提交改动保留。
+- 当前 Git HEAD 与工作区状态以本轮交付报告现场核验为准。

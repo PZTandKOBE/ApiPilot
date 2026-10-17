@@ -145,6 +145,15 @@ watch(
 
             <div class="flex items-baseline gap-1.5">
               <dt class="text-[var(--console-text-muted)]">
+                {{ t('console.runs.planId') }}
+              </dt>
+              <dd class="truncate font-mono text-[var(--console-text-dim)]">
+                {{ run.planId }}
+              </dd>
+            </div>
+
+            <div class="flex items-baseline gap-1.5">
+              <dt class="text-[var(--console-text-muted)]">
                 {{ t('console.runs.environment') }}
               </dt>
               <dd class="text-[var(--console-text-dim)]">

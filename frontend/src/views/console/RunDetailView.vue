@@ -213,6 +213,13 @@ const cancelRun = async (): Promise<void> => {
             </div>
 
             <div class="flex min-w-0 flex-col gap-0.5">
+              <dt class="console-label">{{ t('console.runs.planId') }}</dt>
+              <dd class="truncate font-mono text-[12px] text-[var(--console-text-dim)]">
+                {{ detail.run.planId }}
+              </dd>
+            </div>
+
+            <div class="flex min-w-0 flex-col gap-0.5">
               <dt class="console-label">{{ t('console.runs.environment') }}</dt>
               <dd class="truncate font-mono text-[12px] text-[var(--console-text-dim)]">
                 {{ detail.run.environmentId }}

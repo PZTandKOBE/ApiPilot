@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { MagicStick, Right } from '@element-plus/icons-vue'
-import { ElAlert, ElButton, ElIcon } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import { ElAlert, ElButton, ElIcon, ElMessage, ElMessageBox } from 'element-plus'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import AgentAnalysisProgress from '@/components/console/Agent/AgentAnalysisProgress.vue'
 import AgentFindingCard from '@/components/console/Agent/AgentFindingCard.vue'
@@ -60,6 +60,49 @@ const errorMessage = computed(() => {
   const error = activeError.value
   return error === null ? '' : t(error.messageKey, error.params)
 })
+
+const hasPlan = computed(() => store.activePlan !== null)
+const activeVersion = computed(() => store.activePlan?.version ?? 1)
+const activeIsCurrent = computed(() => store.activePlan?.isCurrent === true)
+
+onMounted(() => {
+  // The plans a browser shows are also server state.  Without this refresh a
+  // fresh tab sees no local plan, labels the action "Generate", and its
+  // ordinary request is refused with 409 even though the plan exists.
+  void store.loadPlans()
+})
+
+const onPlanAction = async (): Promise<void> => {
+  // Refresh before choosing the branch, so the button acts on the server's
+  // current version list rather than on a possibly stale local cache.
+  await store.loadPlans()
+
+  if (store.activePlan === null) {
+    await store.generatePlan()
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      t('console.aiTest.plan.regenerateBody'),
+      t('console.aiTest.plan.regenerateTitle'),
+      {
+        confirmButtonText: t('console.aiTest.plan.regenerateConfirm'),
+        cancelButtonText: t('console.aiTest.plan.regenerateCancel'),
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+
+  const before = store.projectPlans.length
+  await store.regeneratePlan()
+
+  if (store.planError === null && store.projectPlans.length > before) {
+    ElMessage.success(t('console.aiTest.plan.regenerateSuccess'))
+  }
+}
 
 // A spec that has just landed is the one the user was asking for, so the
 // uploader stands down on its own.
@@ -141,10 +184,27 @@ watch(
         <template v-if="showPlan">
           <section class="flex flex-col gap-4">
             <header class="flex flex-wrap items-center justify-between gap-3">
-              <div class="flex items-center gap-3">
+              <div class="flex flex-wrap items-center gap-2">
                 <h2 class="text-[14px] font-semibold text-[var(--console-text)]">
                   {{ t('console.aiTest.plan.title') }}
                 </h2>
+
+                <span
+                  v-if="hasPlan"
+                  class="rounded border border-[var(--console-border)] px-1.5 py-px font-mono text-[10px] text-[var(--console-text-muted)]"
+                >
+                  {{ t('console.plans.version', { version: activeVersion }) }}
+                </span>
+                <span
+                  v-if="hasPlan && activeIsCurrent"
+                  class="rounded border px-1.5 py-px text-[10px] whitespace-nowrap"
+                  :style="{
+                    color: 'var(--accent-soft)',
+                    borderColor: 'color-mix(in srgb, var(--accent) 34%, transparent)',
+                  }"
+                >
+                  {{ t('console.plans.current') }}
+                </span>
 
                 <RouterLink
                   :to="{ name: 'console-project-plans' }"
@@ -159,10 +219,14 @@ watch(
                 size="small"
                 type="primary"
                 :loading="store.generating"
-                @click="store.generatePlan()"
+                @click="onPlanAction"
               >
                 <ElIcon v-if="!store.generating" class="mr-1.5"><MagicStick /></ElIcon>
-                {{ t('console.aiTest.plan.generate') }}
+                {{
+                  hasPlan
+                    ? t('console.aiTest.plan.regenerate')
+                    : t('console.aiTest.plan.generate')
+                }}
               </ElButton>
             </header>
 

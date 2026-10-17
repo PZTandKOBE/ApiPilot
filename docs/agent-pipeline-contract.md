@@ -92,7 +92,7 @@
 关键事实（全部可核验）：
 
 1. **服务端现在会生成计划，但 run 侧仍然不查表。** Phase 8.2 Step 2 之前，计划只能来自浏览器（`schemas/run.py:105-107`：*"plans are generated in the browser today"*）。现在 `POST /api/projects/{projectId}/agent/tasks` 在服务端跑完整条确定性管线并把结果落库（`services/agent_plan.py` + `services/agent.py`）。**`create_run` 的输入契约不变**：run 仍然带着整份 `plan` 进来。
-2. **后端当前有 4 个 router 模块、12 条 API 路径、14 个 OpenAPI operation。**（本节写于 Phase 8.2，当时的数字是「9 条路由：run 6 条 + agent 3 条」；Phase 8.5 Step 2/4 之后又装入了 `guest_sessions.router` 与 `projects.router`，因此这里更新为当前实测值——`create_app()` 生成的 OpenAPI 实测：routers 4、paths 12、operations 14，构成是 runs 6 + agent 3 + guest_sessions 2 + projects 3。**新增的 5 个 operation 不属于本契约的 Agent 管线范围。**）`app.py` 装配 `runs.router`、`agent.router`、`guest_sessions.router` 与 `projects.router`。Agent 侧是 `POST /api/projects/{project_id}/agent/tasks`、`GET /api/agent/tasks/{task_id}`（Phase 8.2 Step 2）与 `GET /api/agent/tasks/{task_id}/audit`（Phase 8.4 Step 1）；集合挂项目、条目由自己的 id 寻址，与 run 同一条地址规则。仍然没有 `/api/plans/*`、`/api/specs/*`，也没有 `.../tasks/{id}/run`。
+2. **后端当前有 4 个 router 模块、13 条 API 路径、15 个 OpenAPI operation。**（本节写于 Phase 8.2，当时的数字是「9 条路由：run 6 条 + agent 3 条」；Phase 8.5 Step 2/4 之后又装入了 `guest_sessions.router` 与 `projects.router`，因此这里更新为当前实测值——`create_app()` 生成的 OpenAPI 实测：routers 4、paths 13、operations 15，构成是 runs 6 + agent 4 + guest_sessions 2 + projects 3。**新增的 5 个 operation 不属于本契约的 Agent 管线范围。**）`app.py` 装配 `runs.router`、`agent.router`、`guest_sessions.router` 与 `projects.router`。Agent 侧是 `POST /api/projects/{project_id}/agent/tasks`、`GET /api/projects/{project_id}/plans`（C31）、`GET /api/agent/tasks/{task_id}`（Phase 8.2 Step 2）与 `GET /api/agent/tasks/{task_id}/audit`（Phase 8.4 Step 1）；集合挂项目、条目由自己的 id 寻址，与 run 同一条地址规则。仍然没有 `/api/plans/*`、`/api/specs/*`，也没有 `.../tasks/{id}/run`。
 3. **`agent_tasks` 已被服务端真正使用。** 模型是 `db/models/agent.py:59-100`，解引用面是 `db/models/__init__.py` 的导出与 `db/models/project.py:142/224/336` 三条反向关系。Phase 8.2 Step 2 起 `services/agent.py` 为每次任务写一行（`pending → analyzing → completed/failed`），并把结果计划的 `test_plans.agent_task_id` 指回它。**前端曾经零引用，Phase 8.2 Step 3 起已接入**：`createAgentService()` 默认走服务端 HTTP 实现（见 §4.1）；`frontend/src` 中如今只剩一处提及 `agent_tasks.prompt` 的文案注释（`frontend/src/i18n/console-schema.ts:378`），不再有对该表的读写。
 4. **`api_endpoints` 从未物化。** `runs.py:672-676`：*"No api_endpoints are materialised, so there is nothing for this to point at."* 数据库 `api_endpoints` = 0 行。理解结果（endpoints/dependencies/risks）**没有任何持久化位置**，它是文档的纯函数，每次加载重算（`stores/agent.ts:41-46`）。
 5. **审批是客户端写 localStorage。** `stores/agent.ts:318-330`。后端只复核 payload 里的 `status` 字符串（`runs.py:375-386`），**审批的权威在客户端**。
@@ -255,6 +255,7 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | `status` | `draft\|in_review\|approved\|rejected` | **Agent 只能产出 `draft`** | `test_plans.status` |
 | `source` | `generated\|handoff` | — | `test_plans.source` |
 | `generatedAt` | ISO 时间戳 | **无列可落**（`schemas/run.py:155-159`），仅校验格式 | 丢弃 |
+| `version` / `isCurrent` / `runCount` | `test_plans.version` / 该文档最高 version / 指向该计划的 `test_runs` 数 | C31；旧计划 `version=1` |
 | `approvedAt`/`rejectedAt`/`rejectionReason` | — | 由人类审批写入，不由 Agent 写 | 同名列 |
 
 **TestScenario**
@@ -290,7 +291,12 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | `target` | 带点路径：`status` / `body.<path>` / `header.<Name>`（`schemas/run.py:134`） | `target` (VARCHAR(255)) |
 | `expected` | **字符串**（`PlanAssertion.expected: str`，Pydantic 不会把 int 强转） | `expected_value` (JSONB，实际存 JSON 字符串) |
 | `description` | `LocalizedText` | `description` JSONB |
-| （无） | 计划侧**没有** `stepId`；`test_assertions.step_id` 恒为 NULL（`runs.py:692-696`） | 断言挂点由 `_checkpoint_step_key` 在快照时决定 |
+| `stepId` | 可选。指向本 scenario 内一个 `assert` 步骤；计划生成时按**真实 endpoint 关联**分组产生（C30-M）。旧计划没有该字段 | `test_assertions.step_id`；快照写入 `run_assertions.run_step_id`。缺失时回退到 `_checkpoint_step_key` |
+
+**`expected` 的两种语义（C30-K / C30-M）：** 普通断言仍把 `expected` 当字符串做相等比较；
+`field` 断言在 `expected == "present"` 时表示"该字段必须存在"，只要路径解析成功就通过，
+实际值（包括 JSON `null`、`""`、`0`、`false`）记录为 `actual`。这是为兼容旧计划保留的哨兵值，
+不需要数据库迁移；缺失字段或缺失父对象仍然失败。详细布局见 §6.4。
 
 ### 5.3 id 与 key 的生成契约（最重要的一节）
 
@@ -307,7 +313,7 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | 对象 | 现状形状 | 出处 |
 |---|---|---|
 | `specId` | `spec_` + `slug`，`slug = slugify(title) + '_' + hash(content)` | `spec_identity.py:7` |
-| `plan.id` | `plan_${spec.slug}` | `mock/agent/plan.ts:519` |
+| `plan.id` | v1 `plan_{spec.slug}`；n≥2 `plan_{spec.slug}_v{n}` | `test_plans.public_id` / `version`；C31 |
 | `scenario.id` | `scenario_authentication` / `scenario_lifecycle_${endpoint.id}` / `scenario_dependent_${endpoint.id}` / `scenario_negative_${endpoint.id}` / `scenario_smoke_${endpoint.id}` | `plan.ts:176/220/284/389/420` |
 | `request` 步骤 | `${endpoint.id}__${index}` | `plan.ts:82` |
 | `extract` 步骤 | `${endpoint.id}__extract_${variable}` | `plan.ts:101` |
@@ -337,7 +343,7 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 
 **为什么必须变**：Agent Lab 的 review 界面逐行渲染 scenarios / steps / assertions。计数摘要让它无从渲染，前端只剩下两条路——自己造行（禁止），或把摘要强转成 `TestPlan`（禁止）。§5 已经固定了这棵树的形状，读回来照它序列化即可。
 
-**为什么这是最小方案**：只改一个响应模型的字段形状，**零 schema 变更、零新接口**；两个端点都返回同一棵树，因此创建之后不需要再读一次。
+**为什么这是最小方案**：只改一个响应模型的字段形状，**零 schema 变更、零新接口**（C31 追加的版本集合读取见 6.5 节）；两个端点都返回同一棵树，因此创建之后不需要再读一次。
 
 | 读回字段 | 来源 | 说明 |
 |---|---|---|
@@ -345,11 +351,12 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | `name` / `goal` | `test_plans.name` / `description` | JSONB，`LocalizedText` |
 | `status` / `riskLevel` / `source` | 同名列 | `status` 只可能是 `draft` |
 | `generatedAt` | `test_plans.created_at` | payload 的 `generatedAt` 无列（§6.1） |
+| `version` / `isCurrent` / `runCount` | `test_plans.version` / 该文档最高 version / 指向该计划的 `test_runs` 数 | C31；旧计划 `version=1` |
 | `scenarios[].{id,index,name,description,riskLevel,expected}` | `test_scenarios` 同名列 | 按 `sort_order` |
 | `scenarios[].steps[].{id,index,kind,description,produces,consumes}` | `test_steps` 同名列 | 按 `sort_order` |
 | `scenarios[].steps[].method` / `path` | `test_steps.config` | **G1 的读回**，与 run 快照同一规则 |
 | `scenarios[].steps[].endpointId` | — | 恒 `null`：计划侧的 endpoint id 是前端字符串，而该列是 `api_endpoints` 的外键，那张表从未物化 |
-| `scenarios[].assertions[].{id,kind,target,expected,description}` | `test_assertions` 同名列 | 按 `assertion_key`（该表没有 `sort_order`） |
+| `scenarios[].assertions[].{id,kind,target,expected,description,stepId}` | `test_assertions` 同名列；`stepId` ← `test_steps.step_key`（LEFT JOIN `test_assertions.step_id`） | 按 `assertion_key`（该表没有 `sort_order`）；旧计划 `stepId=null` |
 | `understanding` | 内存 | 只有创建响应有；不落库，`GET` 一律 `null`（§13 G11） |
 
 ## 6. Test Plan Mapping
@@ -367,7 +374,7 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | `plan.approvedAt` / `rejectedAt` / `rejectionReason` | 同名列 | — |
 | `plan.generatedAt` | — | **无列，丢弃** |
 | （无） | `test_plans.agent_task_id` | **不由 create-run 写**（恒 NULL）；Agent 路径必须自己写 |
-| （无） | `test_plans.version` | 默认 1 |
+| `plan.version`（Agent 分配） | `test_plans.version` | v1=1；重新生成 n≥2，见 6.5 节 |
 | `scenario.id` | `test_scenarios.scenario_key` | — |
 | `scenario.name` / `description` / `expected` | 三个 JSONB 列 | — |
 | `scenario.riskLevel` | `test_scenarios.risk_level` | — |
@@ -387,7 +394,7 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | `assertion.target` | `test_assertions.target` | — |
 | `assertion.expected` | `test_assertions.expected_value` | 存成 JSON 字符串（`\"200\"`） |
 | `assertion.description` | `test_assertions.description` | — |
-| （无） | `test_assertions.step_id` = **NULL** | 计划侧没有 `stepId` ⇒ 所有断言都是 scenario 级 |
+| `assertion.stepId` | `test_assertions.step_id`（可空） | 解析到刚写入的 `test_steps` 行；旧计划没有该字段 ⇒ NULL，仍按 scenario 级回退 |
 
 **复用语义（`runs.py:616-619`）：** 同一个 `(project_id, public_id)` 第二次出现时，**复用已存的行、不重写**，并按稳定 key 反查 id；payload 里有而库里没有的场景拿不到 `source_scenario_id`（写 NULL，不伪造）。
 
@@ -401,8 +408,10 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 | `step.description` / `kind` / `index` | `description` / `step_type` / `sort_order` | `status` 初始 `pending` |
 | **`step.method` / `step.path`** | `run_steps.method` / `run_steps.path` | **从 payload 直抄**，不 join `test_steps`（`runs.py:823-827` 注释："Snapshots, copied rather than joined"） |
 | `assertion.id` / `kind` / `target` / `expected` / `description` | `assertion_key` / `assertion_type` / `target` / `expected_value` / `description` | `status` 初始 `skipped` |
-| （计算） | `run_assertions.run_step_id` | `_checkpoint_step_key`：第一个 `kind==='assert'` 的步骤，否则最后一个步骤，否则 NULL |
+| `assertion.stepId` | `run_assertions.run_step_id` | 计划的绑定优先：断言挂到它指名的 `assert` 步骤；缺失/无效时回退 `_checkpoint_step_key`（第一个 `assert` 步骤，否则最后一个步骤，否则 NULL） |
 | `step.id`（经 `source_step_id`） | `run_steps.source_step_id` | 唯一一条**回指计划侧**的链路，供 `extract` 读 `test_steps.produces` |
+
+**版本与历史 Run：** 重新生成只新增 `test_plans` 行，不改任何已有 `test_runs.plan_id`；Run 的 `planId` 因此始终指向它实际执行的版本。执行器读取运行快照，不读当前计划。
 
 ### 6.3 三处结构性事实（Phase 8.x 必须先看这一节）
 
@@ -417,11 +426,44 @@ TestPlan                 ←→ backend PlanPayload（schemas/run.py:152-177）
 - **无迁移、无新列**：`test_steps` 的列集合不变（验证脚本会断言 `method`/`path` 仍不是列、`config` 仍是 jsonb）。
 - **未回填历史行**：既有计划树的 `config` 仍是 `{}`（复用路径**不重写**计划树），它们靠 payload 继续工作；只有新物化的计划才带目标。
 
-**G2 — 断言无法表达"挂在哪个步骤"，靠 `checkpointOf` 兜底。**
-`test_assertions.step_id` 存在但恒为 NULL；快照用"第一个 assert 步骤 / 最后一个步骤"决定挂点。因此**AI 无法表达"这条断言属于第 2 个请求"**，只能靠 scenario 内步骤顺序隐含。若将来要精确挂点，最小改动是给 `PlanAssertion` 加可选 `stepId`（**契约变更**，前端类型 + 后端 schema 同步改），不需要动数据库。
+**G2 — 断言可以精确挂在"哪个 assert 步骤"（C30-M 已实施，兼容旧计划）。**
+`PlanAssertion.stepId` 是可选字段；两条 Planner 都按真实 endpoint 关联把同一请求的断言归入紧跟该请求的 assert 步骤，写入 `test_assertions.step_id`，运行快照再写入 `run_assertions.run_step_id`。执行器在该步骤读取当时的响应，因此 POST 的 201 不会读到 GET 的 200。旧计划没有 `stepId`，仍走 `_checkpoint_step_key` 的 scenario 级回退，无需迁移。
 
 **G3 — `depends_on` / `consumes` 只是记录，执行器不读。**
 执行顺序**只由 `sort_order` 决定**（`run_executor.py` 按 `sort_order` 推进）。`test_steps.depends_on` 在 payload 里根本没有来源（`_get_or_create_plan` 写 `None`，落库为 JSON `null`，实测全库 7 行皆如此；**没有 SQL NULL**）；`consumes` 落了库但执行器不消费。⇒ **AI 想表达"B 必须在 A 之后"，唯一有效手段是把 `index` 排对**，写 `dependsOn` 没有执行效果（`db/models/agent.py:14-18` 已说明它是 "document-ordered reference the database cannot police"）。
+
+### 6.4 断言与响应的绑定（C30-M）
+
+1. **存在性语义。** `field` 断言的 `expected="present"` 表示"字段必须存在"，不是与字符串 `"present"` 比较。
+   路径解析成功即通过，`actual` 记录真实值；缺失字段或缺失父对象失败。JSON `null`、`""`、`0`、`false` 都算存在。
+2. **与相等断言的区别。** 其他 `expected` 仍按普通字符串相等比较。`present` 是历史计划已经在用的哨兵值，
+   执行器继续按存在性处理，不需要迁移已有计划。
+3. **一组断言只读所属请求的响应。** 每条断言通过 `stepId` 挂在场景内的一个 `assert` 步骤上；
+   执行器在该步骤使用当前请求的响应判定，而不是场景最后一次响应。
+4. **断言步骤紧跟对应请求。** 多请求场景中，`assert` 步骤必须放在它所断言的请求之后；
+   同一请求的多条断言共用一个 `assert` 步骤。
+5. **禁止跨请求聚合。** 不得把所有请求的断言放进一个只读取最后响应的步骤；旧计划如果仍是这种布局，
+   会保留原有语义，但新生成的计划不得再这样组织。
+6. **典型生命周期布局。**
+
+   ```text
+   POST /orders → POST assertions → Extract orderId → GET /orders/{orderId} → GET assertions
+   ```
+7. **生成侧规则。** 分组依据是生成时真实存在的 endpoint 关联（`endpoint_id` → 该 endpoint 的 request 步骤），
+   不得解析 `ep_post_orders__status` 之类的断言 key 反推来源；两条 Planner
+   （确定性 `generate_plan` 与模型 `design_to_plan`）共用 `agent_plan.arrange_assertion_steps`。
+
+### 6.5 计划重新生成与版本管理（C31）
+
+**版本标识。** 第一个计划继续使用历史兼容的 `plan_{slug}`，`test_plans.version = 1`；第 n 个版本（n ≥ 2）使用 `plan_{slug}_v{n}`，`version = n`。版本号在同一个 `(project_id, spec_id)` 序列内单调递增，不同项目、不同文档各自独立。`test_plans.version` 列在 C31 之前已经存在，因此本功能**没有新列、没有 migration**。
+
+**分配与并发。** Agent 重新生成在持久化事务内先取 `pg_advisory_xact_lock`，再读取当前最大 version 并分配下一个；`UNIQUE(project_id, public_id)` 是最后的兜底。计划校验失败时事务回滚，不留下半棵树，也不消耗版本号。
+
+**API。** `AgentTaskCreateRequest.regenerate` 默认 `false`：普通首次生成遇到已存在计划仍然返回 409 `plan-exists`，旧契约不变。显式 `regenerate=true` 跳过该拒绝并创建新版本。`GET /api/projects/{project_id}/plans` 返回项目内所有未删除的计划树，每项带 `version`、`isCurrent`、`runCount`；`isCurrent` 是该文档的最高 version，**独立于审批状态**。
+
+**审批与历史。** 新版本由 Planner 产生，状态始终 `draft`，不继承旧版本的 `approved`；旧版本的审批状态不变。`test_runs.plan_id` 不因生成新版本而改变，Run 的 `planId` 明确指向它实际执行的版本。前端从已有计划发起重新生成，先确认再调用；失败保留旧计划，旧版本可在计划列表或详情页按 id 查看。
+
+**读回兼容。** `AgentPlanResponse` 增加 `version` / `isCurrent` / `runCount`；`PlanPayload` 接受这些可选读回字段，但 create-run 不以它们选择版本——已有 plan 行才是权威。
 
 ---
 
@@ -591,7 +633,7 @@ DeepSeek 的 `json_schema` 只接受**封闭**子集：每个 object 的 `requir
 | E5 | 断言 `expected` 必须是**字符串** | Pydantic 422（`PlanAssertion.expected: str`） |
 | E6 | 同一 scenario 内 `step.id` 唯一、`assertion.id` 唯一；同一 plan 内 `scenario.id` 唯一 | `UniqueViolation` |
 | E7 | `index` 决定执行顺序，必须显式、稠密、与期望顺序一致 | 顺序错误（`dependsOn` 无执行效果，见 G3） |
-| E8 | 断言只能依赖**已经被执行过**的响应（同场景更早的步骤） | 断言拿到空响应 → `skipped`/失败 |
+| E8 | 断言只能依赖**已经被执行过**的响应（同场景更早的步骤），且执行器在该断言所属 `assert` 步骤读取当时的响应 | 断言拿到空响应 → `skipped`/失败；跨请求聚合会读错响应（§6.4） |
 | E9 | **不依赖请求体**：POST/PUT/PATCH 在 v1 发送**空 body** | 计划里"创建资源"类场景会在执行期失败 |
 | E10 | **不使用 query 参数**（执行器尚未支持） | 参数丢失 → 断言失败 |
 | E11 | `schema` 断言会被判为 `skipped`，不得当作有效覆盖 | 覆盖率虚高 |
@@ -612,7 +654,7 @@ DeepSeek 的 `json_schema` 只接受**封闭**子集：每个 object 的 `requir
 | D3 | **Schema 断言** | 一律 `skipped`（不引入 `jsonschema`） | 7.3 |
 | D4 | **Cookie 认证** | 只支持 `none/bearer/basic/apiKey` | 7.3；`environment_auths.auth_type` |
 | D5 | 服务端 **YAML** 解析 | 服务端只解析 JSON（8.2 Step 2 起）；YAML 文档只会得到 `parse-failed` | `services/agent_plan.py` 的 `decode_document`；`spec_identity.probe_document` 只标注不解析 |
-| D6 | 计划**版本化 / 重新生成** | 计划存储已实现（8.2 Step 2，只写 `draft`）；同一 `planId` 再次生成是 **409 拒绝，不覆盖** | `services/agent.py` 的 `create_task`；§12 决策 |
+| D6 | ~~计划版本化 / 重新生成~~ | **已实现（C31）**：`regenerate=true` 创建 `plan_{slug}_v{n}`，旧计划与历史 Run 保留；普通首次生成遇到已存在计划仍是 409 | 6.5 节；`services/agent.py` |
 | D7 | 服务端审批权威 | 审批在 localStorage | `stores/agent.ts:318-330`；`_check_approval` 只信 payload |
 | D8 | ~~`agent_tasks` 落库与任务生命周期~~ | **已实现并已接入前端**（8.2 Step 2 + Step 3）：每任务一行、四状态机、`agent_task_id` 回指 | `services/agent.py`；`frontend/src/services/api/agent.ts` |
 | D9 | Understanding 持久化 / 流式进度 | 两边都不落库；服务端一次算完即弃，进度仍只有浏览器定时器 | `services/agent.py` 的 `_generate`；`stores/agent.ts:41-46` |
@@ -621,10 +663,10 @@ DeepSeek 的 `json_schema` 只接受**封闭**子集：每个 object 的 `requir
 | D17 | ~~token 用量~~ | **已实现**（8.4 Step 1）：按 stage（`analyze` / `generatePlan`）存进 `agent_task_audits.usage`，只存 provider 真实报过的计数；**成本计算仍未实现**（没有统一价格配置） | `services/agent_audit.py`；`schemas/agent_audit.py` |
 | D18 | ~~计划阶段不可审计~~ | **已实现**（8.4 Step 1）：`agent_task_audits.plan_design` 保存经 Pydantic 校验的 **PlanDesign**（补全 key 之前的样子），`understanding` 保存校验后的分析结果；仍**不可重放**（任务重跑要再花钱），也没有 attempt/retry 维度 | `db/models/agent.py` 的 `AgentTaskAudit`；§7.6 |
 | D20 | 审计是 1:1，没有 attempt | 一个任务一行（`task_id` 唯一）；重试/队列/worker 仍未设计，将来要多 attempt 时先改这条约束 | `AgentTaskAudit` 的 `unique=True` |
-| D19 | 断言无法挂到具体 step | 契约的 `test_assertions.step_id` 恒 NULL（G2/D13）；本 Step 让模型用 `endpointId` 指明"读哪个响应"，key 因此指向正确端点，但"挂到第几个 step"仍不可表达 | `services/agent_analyzer.py` 的 `PlanAssertionDesign`；G2 仍未解决 |
+| D19 | ~~断言无法挂到具体 step~~ | **已实现（C30-M）**：`PlanAssertion.stepId` → `test_assertions.step_id` → `run_assertions.run_step_id`；旧计划仍走 scenario 级回退 | §6.3 G2 |
 | D11 | `test_workflows`（Workflow 层） | 表不存在，按设计延后 | `dosc:882-895`；数据库核验 |
 | D12 | Adaptive Testing、PDF Report、CLI | 未实现 | `phase-6.2-...:767-784` |
-| D13 | 断言精确挂到某个步骤 | `test_assertions.step_id` 恒 NULL | §6.3 G2 |
+| D13 | ~~断言精确挂到某个步骤~~ | **已实现（C30-M）**：可选 `stepId`；旧计划 NULL 时回退 | §6.3 G2 |
 | D14 | 幂等性 / 并发执行的模型 | 无互斥逻辑 | `phase-6.2-...:814` |
 | D15 | ~~前端 Agent 错误码~~ | **已实现**（8.2 Step 3）：`plan-exists` / `task-not-found` / `plan-invalid` 三个码，以及 `console.aiTest.errors.{planExists,taskNotFound,loadFailed}` 三条文案 | `frontend/src/services/agentError.ts`；两个 locale |
 
@@ -723,10 +765,12 @@ AgentTaskInput ───► │  node: load_spec       （读 api_specs.content�
 
 ## 13. 契约缺口与最小修复方向（G1 已实施，其余仅分析）
 
+> G2 已在 C30-M 实施（见 6.3 / 6.4 节）；其余缺口仍是分析。
+
 | # | 缺口 | 影响 | 最小方案（供 8.2+ 决策） | 是否要改数据库 |
 |---|---|---|---|---|
 | G1 | `test_steps` 无法表达 method/path（§6.3） | ~~计划一旦先在服务端落库，执行器快照就没有请求信息~~ → **已解决** | **已实施（Phase 8.2 Step 1）**：写入既有 `config` JSONB、快照回填，零 schema 变更；改动 `services/runs.py` + 新增 `scripts/verify_plan_step_config.py` | **否** |
-| G2 | 断言无法表达步骤挂点（§6.3） | 断言只能 scenario 级，靠 `checkpointOf` 兜底 | `PlanAssertion` 加可选 `stepId`（前后端契约同步） | **否**（`test_assertions.step_id` 已存在） |
+| G2 | ~~断言无法表达步骤挂点（§6.3）~~ → **已解决（C30-M）** | 断言通过可选 `stepId` 挂到所属 assert 步骤；旧计划仍走 scenario 级回退 | **已实施**：`PlanAssertion.stepId` + `test_assertions.step_id` + `run_assertions.run_step_id` | **否**（复用既有列） |
 | G3 | `dependsOn` 无执行语义（§6.3） | 写了不生效，顺序只认 `index` | 契约层明确"顺序只由 index 表达"；或后续让执行器读 `depends_on` | 否 |
 | G4 | ~~任务失败无处记录~~ → **已解决**（8.4 Step 1） | 失败写进 `agent_task_audits`：`failure_stage` / `failure_code`（复用既有错误码）/ `failure_message`（≤500 字，无 traceback），待办任务与失败任务都能读 | 已实施（不扩 `agent_tasks`） | 否 |
 | G5 | 审批权威在客户端（§8.2） | 服务端只复核字符串，不是安全边界 | 独立决策：审批上移 + `POST /api/plans/{id}/approve` | 否 |
@@ -734,7 +778,7 @@ AgentTaskInput ───► │  node: load_spec       （读 api_specs.content�
 | G7 | 服务端无法产出 `LocalizedText.key` | 服务端生成的文案只能 `{text}` | 要么接受 `{text}`，要么把字典作为服务端资产 | 否 |
 | G8 | `generatedAt` 无列 | 生成时刻不可恢复（`created_at` 是落库时刻） | 可接受；若必须则需新列 | **可能需要** |
 | G9 | ~~前端没有 `plan-exists` / `task-not-found` 错误码~~ → **已解决**（8.2 Step 3） | 409 / 404 / 422 各有自己的码与可渲染句子 | 已实施 | 否 |
-| G10 | 计划无法版本化 / 重新生成 | 同一文档 + 不同 prompt 会撞同一个 `planId`，当前答案是 409 拒绝；前端把这个拒绝显示成"已有计划" | 独立 Phase：计划版本（`version` 列已存在）或 `planId` 纳入 prompt 摘要 | **可能需要** |
+| G10 | ~~计划无法版本化 / 重新生成~~ → **已解决（C31）** | 新版本使用独立 public id 与 `test_plans.version`；普通首次生成保持 409，显式 regenerate 创建 v2+ | 已实施：`GET /api/projects/{project_id}/plans` 读取版本集合；无新列 | **否** |
 | G11 | 前端刷新后理解面板为空 | **部分解决**（8.4 Step 1）：understanding 现在随任务落库（审计表）并可从 `.../audit` 读回，**但任务响应仍不返回它**——前端 UI 未接，也不在本 Step 范围内 | 前端接入是一个独立小 Step | 否 |
 | G12 | 前端没有 prompt 输入框 | 任务要求仍由 i18n 模板生成并存进 `agent_tasks.prompt`；**8.3 Step 1 起模型真的读它了**（§7.3），所以"这句话怎么写"第一次有了实际效果 | 前端加输入框，独立小 Step | 否 |
 | G13 | 409 的句子与前端词汇不一致 | 服务端按"阶段"给句子（`errors.generateFailed `），而前端为 `plan-exists` 另有更具体的 `errors.planExists`；今天界面显示前者 | 服务端 `_STAGE_MESSAGE_KEYS` 加一行 `plan-exists`（1 行 + 1 处测试），**本 Step 不改**（属 Step 2 的措辞决定） | 否 |
@@ -767,3 +811,34 @@ AgentTaskInput ───► │  node: load_spec       （读 api_specs.content�
 ---
 
 **架构由项目负责人确认，本任务不重新设计总体架构。**
+
+## Request bodies on a plan step
+
+`PlanStep` (and the `AgentStepResponse` mirror) carry two optional fields:
+
+- `body` — the JSON request body the step sends, exactly as the plan states it.
+  Any JSON value is valid: object, array, string, number, boolean or `null`.
+- `body_present` — whether `body` is a body at all. Default `false`.
+
+Both defaults keep every pre-existing plan readable: a plan that predates these
+fields has no body, which is exactly what `body_present: false` means. The two
+fields exist because `body: null` alone cannot distinguish "this step sends the
+JSON literal `null`" from "this step sends nothing", and those are different HTTP
+requests.
+
+**Generation.** For `application/json` request bodies the deterministic planner
+derives the body from the parsed OpenAPI `requestBody` schema, never from the
+model: an explicit `example`, `default`, `const`, `examples[].value`, or an `enum`
+member wins; otherwise `object` is filled from its `required` properties (recursively),
+`string` gets a non-empty value honouring `minLength`/`format`, `integer`/`number`
+honour `minimum`, `array` takes one item from `items`. When a schema cannot be
+satisfied honestly the step is left with no body (`body_present: false`) rather than
+with an empty object that is certain to be rejected. multipart, form-urlencoded and
+binary bodies are **not** supported and are not claimed to be.
+
+**Persistence and execution.** The body is stored in the existing
+`test_steps.config` JSONB blob as `body` plus `bodyPresent`. No column was added.
+`run_steps` does not snapshot the body; the executor reads it through the existing
+`run_steps.source_step_id` link, the same way it already reads `produces`. When
+`bodyPresent` is true the executor passes the value as the JSON body of the request;
+when it is false the request carries no body, which is the pre-existing behaviour.

@@ -106,6 +106,10 @@ export const useAgentStore = defineStore('agent', () => {
   const generating = ref(false)
   const planError = ref<AgentError | null>(null)
 
+  const plansLoading = ref(false)
+  const plansError = ref<AgentError | null>(null)
+  let plansInFlight: Promise<void> | null = null
+
   const projectId = computed(() => projectStore.activeProjectId)
 
   /* --- Derived ------------------------------------------------------ */
@@ -140,14 +144,30 @@ export const useAgentStore = defineStore('agent', () => {
   )
 
   /**
-   * The project's newest plan.
+   * The current plan for the loaded document.
    *
-   * A project has at most one plan per specification, and regenerating
-   * replaces it in place, so "the latest" is also "the one that matters".
+   * Versions are ordered by `version`, not by array position: a server merge
+   * can append an older version after a newer one, and an old task can be
+   * loaded after the current plan.  The version is the relation; the generated
+   * timestamp is only the tiebreaker for plans persisted before versioning.
    */
-  const activePlan = computed<TestPlan | null>(
-    () => projectPlans.value[projectPlans.value.length - 1] ?? null,
-  )
+  const activePlan = computed<TestPlan | null>(() => {
+    const specId = currentSpec.value?.id
+    const candidates =
+      specId === undefined
+        ? projectPlans.value
+        : projectPlans.value.filter((plan) => plan.specId === specId)
+
+    return candidates.reduce<TestPlan | null>((latest, plan) => {
+      if (latest === null) return plan
+
+      const latestVersion = latest.version ?? 1
+      const version = plan.version ?? 1
+      if (version !== latestVersion) return version > latestVersion ? plan : latest
+
+      return plan.generatedAt > latest.generatedAt ? plan : latest
+    }, null)
+  })
 
   // Run availability is derived where it is used, from the plan on screen —
   // a cached flag here would be a second answer to "may this run?", and the
@@ -203,6 +223,7 @@ export const useAgentStore = defineStore('agent', () => {
   const clearErrors = (): void => {
     analysisError.value = null
     planError.value = null
+    plansError.value = null
   }
 
   const toAgentError = (thrown: unknown, fallbackKey: string): AgentError =>
@@ -328,7 +349,15 @@ export const useAgentStore = defineStore('agent', () => {
    * to the plan the server holds.
    */
   const adoptPlan = (plan: TestPlan): void => {
-    plans.value = [...plans.value.filter((item) => item.id !== plan.id), plan]
+    const current = plan.isCurrent !== false
+    const existing = plans.value.filter((item) => item.id !== plan.id)
+    const kept = current
+      ? existing.map((item) =>
+          item.specId === plan.specId ? { ...item, isCurrent: false } : item,
+        )
+      : existing
+
+    plans.value = [...kept, plan]
   }
 
   /**
@@ -340,7 +369,9 @@ export const useAgentStore = defineStore('agent', () => {
    * understanding → plan — but they are one request, which is what the endpoint
    * offers and what this store adapts to.
    */
-  const runTask = async (): Promise<AgentTaskResult | null> => {
+  const runTask = async (
+    options: { readonly regenerate?: boolean } = {},
+  ): Promise<AgentTaskResult | null> => {
     const spec = parsed.value?.spec
     const document = currentSpecDocument.value
 
@@ -390,6 +421,10 @@ export const useAgentStore = defineStore('agent', () => {
           // Write-only, and never persisted here: the server scans these for
           // leaks and drops them.
           variables: projectStore.variables,
+          // Ordinary first generation keeps its exact old body and 409
+          // plan-exists contract; only the explicit regenerate action adds
+          // this field.
+          ...(options.regenerate === true ? { regenerate: true } : {}),
         },
         {
           onProgress: (next) => {
@@ -413,6 +448,11 @@ export const useAgentStore = defineStore('agent', () => {
 
       if (PLAN_ERROR_CODES.has(error.code)) planError.value = error
       else analysisError.value = error
+
+      // A missing local plan must not strand the user on the ordinary 409.
+      // Refresh the server's version list: if a plan already exists, the
+      // ordinary action now becomes the regenerate action in the UI.
+      if (error.code === 'plan-exists') await loadPlans()
 
       return null
     } finally {
@@ -457,13 +497,12 @@ export const useAgentStore = defineStore('agent', () => {
   /* --- Planning ----------------------------------------------------- */
 
   /**
-   * The "Generate plan" action.
+   * The ordinary "Generate plan" action.
    *
-   * It is the same task as analysing, because the endpoint has one door: a
-   * second task for a document whose plan the server already holds comes back as
-   * `plan-exists` and is shown as a planning failure. Regenerating a plan is a
-   * later phase's decision, and the refusal is the honest answer until it is
-   * made.
+   * It is the same task as analysing, and it deliberately keeps the original
+   * first-generation contract: a second ordinary request for a document whose
+   * plan the server already holds comes back as `plan-exists`.  The explicit
+   * regenerate action is the supported way to create a new version.
    */
   const generatePlan = async (_source: PlanSource = 'generated'): Promise<void> => {
     if (generating.value || analyzing.value) return
@@ -475,6 +514,86 @@ export const useAgentStore = defineStore('agent', () => {
     } finally {
       generating.value = false
     }
+  }
+
+  /**
+   * Create the next plan version for the loaded document.
+   *
+   * The server allocates the id and version under a transaction-scoped lock;
+   * this action never edits or removes the old plan.  A failure leaves the
+   * existing plan array untouched and reports through the same planning error
+   * surface as a first-generation failure.
+   */
+  const regeneratePlan = async (): Promise<void> => {
+    if (generating.value || analyzing.value) return
+
+    generating.value = true
+
+    try {
+      await runTask({ regenerate: true })
+    } finally {
+      generating.value = false
+    }
+  }
+
+  /**
+   * Merge the server's plan versions into the local list.
+   *
+   * The server owns plan content, version and currentness; this browser owns
+   * local approval decisions and local name/goal edits.  An existing local plan
+   * therefore keeps its approval fields and authored copy while taking the
+   * server's version metadata.  A server plan this browser has never seen is
+   * adopted as stored (normally `draft`).
+   */
+  const loadPlans = async (): Promise<void> => {
+    const project = projectId.value
+    if (project === '') return
+
+    // One refresh at a time.  Callers that arrive while it is in flight await
+    // the same request instead of racing it or returning before plans exist.
+    if (plansInFlight !== null) return plansInFlight
+
+    plansLoading.value = true
+    plansError.value = null
+
+    const request = (async () => {
+      try {
+        const remote = await agent.listPlans(project)
+        const localById = new Map(plans.value.map((plan) => [plan.id, plan]))
+        const merged = new Map(plans.value.map((plan) => [plan.id, plan]))
+
+        for (const incoming of remote) {
+          const local = localById.get(incoming.id)
+          merged.set(
+            incoming.id,
+            local === undefined
+              ? incoming
+              : {
+                  ...incoming,
+                  name: local.name,
+                  goal: local.goal,
+                  status: local.status,
+                  approvedAt: local.approvedAt,
+                  rejectedAt: local.rejectedAt,
+                  rejectionReason: local.rejectionReason,
+                },
+          )
+        }
+
+        plans.value = [...merged.values()]
+      } catch (thrown) {
+        plansError.value = toAgentError(
+          thrown,
+          'console.aiTest.errors.loadFailed',
+        )
+      } finally {
+        plansLoading.value = false
+        plansInFlight = null
+      }
+    })()
+
+    plansInFlight = request
+    return request
   }
 
   /* --- Approval boundary -------------------------------------------- */
@@ -661,6 +780,8 @@ export const useAgentStore = defineStore('agent', () => {
     analysisError,
     generating,
     planError,
+    plansLoading,
+    plansError,
     pendingHandoff,
 
     // derived
@@ -678,6 +799,8 @@ export const useAgentStore = defineStore('agent', () => {
     analyzeSpec,
     loadTask,
     generatePlan,
+    regeneratePlan,
+    loadPlans,
     startReview,
     approvePlan,
     rejectPlan,

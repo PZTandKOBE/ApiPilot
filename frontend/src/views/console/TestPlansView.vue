@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { MagicStick, Tickets } from '@element-plus/icons-vue'
-import { ElButton, ElIcon } from 'element-plus'
-import { computed } from 'vue'
+import { ElAlert, ElButton, ElIcon } from 'element-plus'
+import { computed, onMounted } from 'vue'
 
 import PlanRiskTag from '@/components/console/Agent/PlanRiskTag.vue'
 import PlanStatusTag from '@/components/console/Agent/PlanStatusTag.vue'
@@ -33,6 +33,13 @@ const plans = computed(() =>
   [...store.projectPlans].sort((a, b) => b.generatedAt.localeCompare(a.generatedAt)),
 )
 
+onMounted(() => {
+  void store.loadPlans()
+})
+
+const versionLabel = (plan: TestPlan): string =>
+  t('console.plans.version', { version: plan.version ?? 1 })
+
 const counts = (plan: TestPlan) => {
   const steps = plan.scenarios.reduce((total, scenario) => total + scenario.steps.length, 0)
   const assertions = plan.scenarios.reduce(
@@ -59,6 +66,24 @@ const detailTarget = (plan: TestPlan) => ({
         </ElButton>
       </template>
     </ConsolePageHeader>
+
+    <ElAlert
+      v-if="store.plansError !== null"
+      class="mb-3"
+      type="error"
+      :closable="false"
+      show-icon
+    >
+      <template #title>{{ t('console.aiTest.errors.title') }}</template>
+      <div class="flex flex-wrap items-center gap-3">
+        <span class="text-[12px] leading-relaxed">
+          {{ t(store.plansError?.messageKey ?? 'console.aiTest.errors.loadFailed', store.plansError?.params) }}
+        </span>
+        <ElButton size="small" @click="store.loadPlans()">
+          {{ t('console.plans.retry') }}
+        </ElButton>
+      </div>
+    </ElAlert>
 
     <div v-if="plans.length === 0" class="console-panel">
       <ConsoleEmptyState
@@ -95,6 +120,21 @@ const detailTarget = (plan: TestPlan) => ({
             </div>
 
             <div class="flex shrink-0 items-center gap-2">
+              <span
+                class="rounded border border-[var(--console-border)] px-1.5 py-px font-mono text-[10px] text-[var(--console-text-muted)]"
+              >
+                {{ versionLabel(plan) }}
+              </span>
+              <span
+                v-if="plan.isCurrent === true"
+                class="rounded border px-1.5 py-px text-[10px] whitespace-nowrap"
+                :style="{
+                  color: 'var(--accent-soft)',
+                  borderColor: 'color-mix(in srgb, var(--accent) 34%, transparent)',
+                }"
+              >
+                {{ t('console.plans.current') }}
+              </span>
               <PlanRiskTag :level="plan.riskLevel" />
               <PlanStatusTag :status="plan.status" />
             </div>
@@ -133,6 +173,15 @@ const detailTarget = (plan: TestPlan) => ({
                     ? t('console.aiTest.plan.sourceHandoff')
                     : t('console.aiTest.plan.sourceGenerated')
                 }}
+              </dd>
+            </div>
+
+            <div v-if="plan.runCount !== undefined" class="flex items-baseline gap-1.5">
+              <dt class="text-[var(--console-text-muted)]">
+                {{ t('console.plans.runs') }}
+              </dt>
+              <dd class="font-mono text-[var(--console-text-dim)]">
+                {{ plan.runCount }}
               </dd>
             </div>
           </dl>

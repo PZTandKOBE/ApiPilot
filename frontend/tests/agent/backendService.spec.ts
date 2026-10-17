@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import { AgentServiceError, createAgentService } from '@/services/agent'
 import { createHttpAgentService } from '@/services/api/agent'
+import { resetSessionForTests } from '@/services/session'
 
 /**
  * The agent service against a real server.
@@ -186,6 +187,16 @@ beforeAll(async () => {
       }
 
       requests.push(recorded)
+
+      // The shared HTTP layer obtains a guest session before it calls anything
+      // else, and it now reports a session it could not obtain instead of sending
+      // an unauthenticated request.  Answering the issuance here keeps every
+      // test's `respond` about the endpoint it is actually testing.
+      if (recorded.method === 'POST' && recorded.url === '/api/guest-sessions') {
+        json(response, 201, { sessionToken: 'session-for-tests' })
+        return
+      }
+
       respond(recorded, response)
     })()
   })
@@ -214,6 +225,9 @@ afterAll(async () => {
 // base URL pointing at the default port would make it a transport failure.
 beforeEach(() => {
   requests.length = 0
+  // A token cached by an earlier test would hide whether this one needed to
+  // issue a session at all, which is part of what the counts assert.
+  resetSessionForTests()
   import.meta.env.VITE_API_BASE_URL = baseUrl
 })
 
@@ -231,6 +245,37 @@ const input = {
   prompt: 'Design a test plan for Verify API.',
   variables: { bearer_token: 's3cr3t' },
 }
+
+describe('listPlans', () => {
+  it('reads the version list from the project collection', async () => {
+    respond = (recorded, response) => {
+      expect(recorded.method).toBe('GET')
+      expect(recorded.url).toBe('/api/projects/' + PROJECT + '/plans')
+      json(response, 200, [
+        { ...plan, version: 2, isCurrent: true, runCount: 3 },
+        { ...plan, id: 'plan_verify_1_v2', version: 1, isCurrent: false, runCount: 0 },
+      ])
+    }
+
+    const plans = await service.listPlans(PROJECT)
+
+    expect(plans).toHaveLength(2)
+    expect(plans[0]?.version).toBe(2)
+    expect(plans[0]?.isCurrent).toBe(true)
+    expect(plans[0]?.runCount).toBe(3)
+    expect(plans[1]?.id).toBe('plan_verify_1_v2')
+  })
+
+  it('refuses a collection that is not a plan tree', async () => {
+    respond = (_recorded, response) => {
+      json(response, 200, [{ nope: true }])
+    }
+
+    await expect(service.listPlans(PROJECT)).rejects.toMatchObject({
+      detail: { code: 'generate-failed' },
+    })
+  })
+})
 
 describe('runTask', () => {
   it('asks the server for a task, with the body the endpoint declares', async () => {
@@ -280,6 +325,17 @@ describe('runTask', () => {
       expected: '200',
       description: { key: 'console.aiTest.assertion.statusIs', params: { status: 200 } },
     })
+  })
+
+  it('sends the explicit regenerate flag only when the caller asks for it', async () => {
+    respond = (_recorded, response) => {
+      json(response, 201, taskBody({ plan: { ...plan, version: 2, isCurrent: true } }))
+    }
+
+    await service.runTask({ ...input, regenerate: true })
+
+    const taskCall = agentRequests()[0]
+    expect(taskCall?.body).toMatchObject({ regenerate: true })
   })
 
   it('carries the understanding the response produced', async () => {

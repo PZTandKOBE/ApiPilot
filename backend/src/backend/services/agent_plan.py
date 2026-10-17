@@ -39,7 +39,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from backend.schemas.run import PlanAssertion, PlanPayload, PlanScenario, PlanStep
 from backend.services.spec_identity import slugify
@@ -97,9 +97,14 @@ AGENT_TEXT_KEYS: frozenset[str] = frozenset(
         "console.aiTest.scenario.authenticationName",
         "console.aiTest.scenario.authenticationDescription",
         "console.aiTest.scenario.authenticationExpected",
+        "console.aiTest.scenario.lifecycleName",
+        "console.aiTest.scenario.lifecycleDescription",
+        "console.aiTest.scenario.lifecycleExpected",
         "console.aiTest.step.callEndpoint",
         "console.aiTest.step.login",
         "console.aiTest.step.fetchIdentity",
+        "console.aiTest.step.createResource",
+        "console.aiTest.step.readResource",
         "console.aiTest.step.assertResponse",
         "console.aiTest.step.extractVariable",
         "console.aiTest.assertion.statusIs",
@@ -213,6 +218,7 @@ class ApiEndpointFacts:
     def label(self) -> str:
         return f"{self.method} {self.path}"
 
+    request_body: dict[str, Any] | None = None
 
 @dataclass(frozen=True)
 class ApiResourceFacts:
@@ -346,6 +352,56 @@ def path_params_of(path: str) -> tuple[str, ...]:
 def variables_in(value: str) -> tuple[str, ...]:
     """The {{var}} names a string references, in order of appearance."""
     return tuple(match.group(1) for match in _VARIABLE.finditer(value))
+
+
+def canonical_plan_path(path: str) -> str | None:
+    """The document-path form of a planner path, or None when it is malformed.
+
+    ApiPilot executes `/orders/{{orderId}}` while OpenAPI documents spell the
+    same parameter `/orders/{orderId}`.  Validation compares the two forms
+    after normalising the runtime braces to the document's single braces; the
+    actual step path is never rewritten, so the executor keeps its interpolation
+    syntax.
+
+    Only well-formed, fully consumed placeholders are accepted.  Unbalanced
+    braces, nested/doubled leftovers and empty parameter names return None, so
+    a planner cannot turn a malformed path into a match by accident.
+    """
+    value = path.strip()
+
+    if not value.startswith("/"):
+        return None
+
+    # {{name}} -> {name}; a malformed double-brace sequence simply does not
+    # match and is rejected by the leftover check below.
+    value = _VARIABLE.sub(lambda match: "{" + match.group(1) + "}", value)
+    if "{{" in value or "}}" in value:
+        return None
+
+    canonical: list[str] = []
+    index = 0
+
+    while index < len(value):
+        char = value[index]
+
+        if char == "{":
+            end = value.find("}", index + 1)
+            if end < 0:
+                return None
+            name = value[index + 1 : end]
+            if not name or not re.fullmatch(r"[A-Za-z0-9_.-]+", name):
+                return None
+            canonical.append("{" + name + "}")
+            index = end + 1
+            continue
+
+        if char == "}":
+            return None
+
+        canonical.append(char)
+        index += 1
+
+    return "".join(canonical)
 
 def _endpoint_id(method: str, path: str) -> str:
     return f"ep_{method.lower()}_{slugify(path) or 'root'}"
@@ -589,6 +645,7 @@ def _extract_endpoints(
                     path_params=path_params_of(path),
                     required_body_props=required,
                     constrained_body_props=constrained,
+                    request_body=_body_schema(document, operation_record, format_),
                     response_statuses=statuses,
                     response_props=props,
                 )
@@ -1068,6 +1125,7 @@ def _request_step(
     consumes: Sequence[str],
 ) -> PlanStep:
     """One call, with every path parameter named rather than left literal."""
+    generated_body, body_generated = _json_request_body(endpoint)
     return PlanStep(
         id=request_step_key(endpoint.id, index),
         index=index,
@@ -1078,6 +1136,8 @@ def _request_step(
         path=request_step_path(endpoint),
         produces=None,
         consumes=request_step_consumes(endpoint, consumes),
+        body=generated_body,
+        body_present=body_generated,
     )
 
 
@@ -1120,6 +1180,80 @@ def _status_assertion(endpoint: ApiEndpointFacts) -> PlanAssertion:
     )
 
 
+def arrange_assertion_steps(
+    steps: Sequence[PlanStep],
+    groups: Mapping[str, Sequence[PlanAssertion]],
+    *,
+    assert_description: Any | None = None,
+) -> tuple[list[PlanStep], list[PlanAssertion]]:
+    """Put each request's assertions in an assert step directly after it.
+
+    The plan is the only thing that binds an assertion to a response: the run
+    executor judges an assertion against the response current at the assert step
+    it hangs off.  A scenario-level assert step at the end would therefore judge
+    the create's 201 against the read's 200, so the layout is built here, once,
+    for both planner paths.
+
+    ``groups`` maps a **request step id** to the assertions that read its
+    response -- the association is the caller's real endpoint binding, never a
+    key parsed back into an endpoint.  Design-time assert placeholders are
+    dropped: the helper emits exactly one assert step per request that has
+    assertions, in request order, and leaves a request with no assertions
+    alone.  Each returned assertion names its assert step in ``step_id``.
+
+    Steps keep their ids; only ``index`` is re-numbered, because the inserted
+    steps change every position after the first one.
+    """
+    kept = [step for step in steps if step.kind != "assert"]
+    taken = {step.id for step in kept}
+    ordered: list[PlanStep] = []
+    assertions_out: list[PlanAssertion] = []
+    bound_groups: set[str] = set()
+
+    def assert_id_for(index: int) -> str:
+        candidate = assert_step_key(index)
+        suffix = 0
+        while candidate in taken:
+            suffix += 1
+            candidate = bounded_key(f"{assert_step_key(index)}_{suffix}")
+        taken.add(candidate)
+        return candidate
+
+    for step in kept:
+        ordered.append(step.model_copy(update={"index": len(ordered)}))
+
+        group = list(groups.get(step.id, ()))
+        if step.kind != "request" or not group:
+            continue
+
+        index = len(ordered)
+        assert_step = PlanStep(
+            id=assert_id_for(index),
+            index=index,
+            kind="assert",
+            description=assert_description or _message("console.aiTest.step.assertResponse"),
+            endpoint_id=None,
+            method=None,
+            path=None,
+            produces=None,
+            consumes=[],
+        )
+        ordered.append(assert_step)
+        bound_groups.add(step.id)
+
+        for assertion in group:
+            assertions_out.append(assertion.model_copy(update={"step_id": assert_step.id}))
+
+    # A group whose request step was filtered out (or never existed) must not
+    # silently lose its assertions.  Leave them unbound; the run snapshot keeps
+    # the historical scenario-level fallback for exactly this shape.
+    for key, group in groups.items():
+        if key not in bound_groups:
+            assertions_out.extend(group)
+
+    return ordered, assertions_out
+
+
 def _authentication_scenario(understanding: Understanding) -> PlanScenario | None:
     """Login, lift the credential, call the identity endpoint -- the browser's.
 
@@ -1149,33 +1283,161 @@ def _authentication_scenario(understanding: Understanding) -> PlanScenario | Non
 
     token_field = authentication.token_field or "token"
 
+    login = _request_step(0, source, "console.aiTest.step.login", {}, [])
+    token = _extract_step(1, source, token_field)
+    identity_step = _request_step(
+        2, identity, "console.aiTest.step.fetchIdentity", {}, [token_field]
+    )
+
+    # The login's status and its token are judged against the login response,
+    # before the token is lifted; the identity's status is judged after the
+    # second call.  One assert step at the end would read the identity response
+    # for all three assertions, which is the defect this layout exists to stop.
+    steps, assertions = arrange_assertion_steps(
+        [login, token, identity_step],
+        {
+            login.id: [
+                _status_assertion(source),
+                PlanAssertion(
+                    id=field_assertion_key(source.id, f"body.{token_field}"),
+                    kind="field",
+                    target=f"body.{token_field}",
+                    expected="present",
+                    description=_message(
+                        "console.aiTest.assertion.fieldPresent", {"field": token_field}
+                    ),
+                ),
+            ],
+            identity_step.id: [_status_assertion(identity)],
+        },
+    )
+
     return PlanScenario(
         id="scenario_authentication",
         index=1,
         name=_message("console.aiTest.scenario.authenticationName"),
         description=_message("console.aiTest.scenario.authenticationDescription"),
         risk_level="high",
-        steps=[
-            _request_step(0, source, "console.aiTest.step.login", {}, []),
-            _extract_step(1, source, token_field),
-            _request_step(2, identity, "console.aiTest.step.fetchIdentity", {}, [token_field]),
-            _assert_step(3),
-        ],
+        steps=steps,
         expected=_message("console.aiTest.scenario.authenticationExpected"),
-        assertions=[
-            _status_assertion(source),
-            PlanAssertion(
-                id=field_assertion_key(source.id, f"body.{token_field}"),
-                kind="field",
-                target=f"body.{token_field}",
-                expected="present",
-                description=_message(
-                    "console.aiTest.assertion.fieldPresent", {"field": token_field}
-                ),
-            ),
-            _status_assertion(identity),
-        ],
+        assertions=assertions,
     )
+
+
+def _id_field(endpoint: ApiEndpointFacts) -> str:
+    """The response property that identifies a created resource."""
+    for prop in endpoint.response_props:
+        if prop == "id":
+            return prop
+    for prop in endpoint.response_props:
+        if prop.endswith("_id"):
+            return prop
+    return "id"
+
+
+def _lifecycle_scenarios(understanding: Understanding) -> list[PlanScenario]:
+    """A create and the read that follows it, assertions split by request.
+
+    The lifecycle edge is a fact the analysis already derived -- the create's
+    path and the item path below it -- so the scenario follows that edge rather
+    than re-parsing keys.  The create's status and its id are judged against the
+    create response; only then is the id extracted, and the read's status is
+    judged against the read response.
+    """
+    scenarios: list[PlanScenario] = []
+    seen_creates: set[str] = set()
+
+    for dependency in understanding.dependencies:
+        if dependency.kind != "lifecycle":
+            continue
+
+        create = next(
+            (
+                endpoint
+                for endpoint in understanding.endpoints
+                if endpoint.id == dependency.from_endpoint_id
+            ),
+            None,
+        )
+        read = next(
+            (
+                endpoint
+                for endpoint in understanding.endpoints
+                if endpoint.id == dependency.to_endpoint_id
+            ),
+            None,
+        )
+        if create is None or read is None:
+            continue
+
+        # One lifecycle scenario per created resource.  Several reads can nest
+        # under the same create path (an item and its sub-collection), and a
+        # scenario key built from the create endpoint would collide.
+        if create.id in seen_creates:
+            continue
+        seen_creates.add(create.id)
+
+        resource = next(
+            (
+                item.name
+                for item in understanding.resources
+                if item.id == create.resource_id
+            ),
+            create.path,
+        )
+        id_field = _id_field(create)
+
+        create_step = _request_step(
+            0, create, "console.aiTest.step.createResource", {"resource": resource}, []
+        )
+        extract = _extract_step(1, create, dependency.binding)
+        read_step = _request_step(
+            2,
+            read,
+            "console.aiTest.step.readResource",
+            {"resource": resource},
+            [dependency.binding],
+        )
+
+        steps, assertions = arrange_assertion_steps(
+            [create_step, extract, read_step],
+            {
+                create_step.id: [
+                    _status_assertion(create),
+                    PlanAssertion(
+                        id=field_assertion_key(create.id, f"body.{id_field}"),
+                        kind="field",
+                        target=f"body.{id_field}",
+                        expected="present",
+                        description=_message(
+                            "console.aiTest.assertion.fieldPresent", {"field": id_field}
+                        ),
+                    ),
+                ],
+                read_step.id: [_status_assertion(read)],
+            },
+        )
+
+        scenarios.append(
+            PlanScenario(
+                id=f"scenario_lifecycle_{create.id}",
+                index=0,
+                name=_message(
+                    "console.aiTest.scenario.lifecycleName", {"resource": resource}
+                ),
+                description=_message(
+                    "console.aiTest.scenario.lifecycleDescription", {"resource": resource}
+                ),
+                risk_level="high",
+                steps=steps,
+                expected=_message(
+                    "console.aiTest.scenario.lifecycleExpected", {"resource": resource}
+                ),
+                assertions=assertions,
+            )
+        )
+
+    return scenarios
 
 
 def _smoke_scenario(endpoint: ApiEndpointFacts, index: int) -> PlanScenario:
@@ -1188,6 +1450,12 @@ def _smoke_scenario(endpoint: ApiEndpointFacts, index: int) -> PlanScenario:
     pushScenario numbers them that way.
     """
     label = endpoint.label
+    call = _request_step(
+        0, endpoint, "console.aiTest.step.callEndpoint", {"endpoint": label}, []
+    )
+    steps, assertions = arrange_assertion_steps(
+        [call], {call.id: [_status_assertion(endpoint)]}
+    )
 
     return PlanScenario(
         id=f"scenario_smoke_{endpoint.id}",
@@ -1195,12 +1463,9 @@ def _smoke_scenario(endpoint: ApiEndpointFacts, index: int) -> PlanScenario:
         name=_message("console.aiTest.scenario.smokeName"),
         description=_message("console.aiTest.scenario.smokeDescription", {"endpoint": label}),
         risk_level="low",
-        steps=[
-            _request_step(0, endpoint, "console.aiTest.step.callEndpoint", {"endpoint": label}, []),
-            _assert_step(1),
-        ],
+        steps=steps,
         expected=_message("console.aiTest.scenario.smokeExpected", {"endpoint": label}),
-        assertions=[_status_assertion(endpoint)],
+        assertions=assertions,
     )
 
 
@@ -1219,8 +1484,16 @@ def generate_plan(
     if authentication is not None:
         scenarios.append(authentication)
 
+    scenarios.extend(_lifecycle_scenarios(understanding))
+
     for endpoint in understanding.endpoints:
         scenarios.append(_smoke_scenario(endpoint, len(scenarios) + 1))
+
+    # The builders number their own scenarios, but a plan is a single dense run:
+    # one of them may be absent, so the final order is what numbers the rows.
+    for position, scenario in enumerate(scenarios, start=1):
+        if scenario.index != position:
+            scenarios[position - 1] = scenario.model_copy(update={"index": position})
 
     risk_level = "low"
     for scenario in scenarios:
@@ -1444,3 +1717,104 @@ def _validate_secrets(plan: PlanPayload, forbidden_values: Iterable[str], issue:
     for value in forbidden_values:
         if isinstance(value, str) and len(value) >= _MIN_SECRET_LENGTH and value in haystack:
             issue("secret-value", "a variable's value appears in the plan")
+
+
+def _json_scalar(schema):
+    """A value that satisfies the simple constraints this generator understands."""
+    kind = schema.get("type")
+
+    if kind == "integer":
+        low = schema.get("minimum")
+        return int(low) if isinstance(low, (int, float)) else 1
+
+    if kind == "number":
+        low = schema.get("minimum")
+        return float(low) if isinstance(low, (int, float)) else 1.5
+
+    if kind == "boolean":
+        return False
+
+    if kind == "string":
+        enum = schema.get("enum")
+        if isinstance(enum, list) and enum:
+            return enum[0]
+        fmt = schema.get("format")
+        if fmt == "date-time":
+            return "2026-01-01T00:00:00Z"
+        if fmt == "date":
+            return "2026-01-01"
+        if fmt == "uuid":
+            return "00000000-0000-4000-8000-000000000000"
+        if fmt == "email":
+            return "user@example.com"
+        minimum = schema.get("minLength")
+        length = minimum if isinstance(minimum, int) and minimum > 0 else 1
+        return "x" * max(length, 1)
+
+    return None
+
+
+def json_body_for(schema, depth=0):
+    """A request body for one JSON schema: (value, generated).
+
+    The values come from the document, never from a model: an explicit example, a
+    default, a const or an enum member wins, and only then does the schema's own
+    structure decide.  generated is False when this is not something the generator
+    can state honestly, which the plan records as "no body" rather than as an empty
+    object that is certain to be rejected.
+    """
+    if not isinstance(schema, dict) or depth > 6:
+        return None, False
+
+    for key in ("example", "default", "const"):
+        if key in schema and schema[key] is not None:
+            return schema[key], True
+
+    examples = schema.get("examples")
+    if isinstance(examples, list) and examples:
+        return examples[0], True
+    if isinstance(examples, dict):
+        for entry in examples.values():
+            if isinstance(entry, dict) and "value" in entry:
+                return entry["value"], True
+
+    enum = schema.get("enum")
+    if isinstance(enum, list) and enum:
+        return enum[0], True
+
+    kind = schema.get("type")
+
+    if kind == "object" or (kind is None and isinstance(schema.get("properties"), dict)):
+        properties = schema.get("properties")
+        if not isinstance(properties, dict) or not properties:
+            return None, False
+        required = schema.get("required")
+        names = [n for n in required if isinstance(n, str)] if isinstance(required, list) else []
+        if not names:
+            names = list(properties.keys())[:1]
+        built = {}
+        for name in names:
+            value, ok = json_body_for(properties.get(name), depth + 1)
+            if not ok:
+                return None, False
+            built[name] = value
+        return built, True
+
+    if kind == "array":
+        value, ok = json_body_for(schema.get("items"), depth + 1)
+        if not ok:
+            return None, False
+        return [value], True
+
+    if kind in ("string", "integer", "number", "boolean"):
+        return _json_scalar(schema), True
+
+    return None, False
+
+
+def _json_request_body(facts):
+    """The generated body for one endpoint, from its parsed requestBody schema."""
+    schema = getattr(facts, "request_body", None)
+    if not isinstance(schema, dict):
+        return None, False
+    return json_body_for(schema)

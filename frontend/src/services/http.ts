@@ -154,15 +154,19 @@ export const request = async <T>(path: string, options: RequestOptions = {}): Pr
     })
   }
 
-  const token = await ensureSession().catch(() => null)
+  // A session that could not be obtained is thrown, not turned into a request
+  // with no header.  Sending that request would earn a 401 for a reason that has
+  // nothing to do with the resource, and the 401 path would then mint another
+  // session -- which is how a CORS misconfiguration once produced thousands.
+  const token = await ensureSession()
   let response = await send(token)
 
   if (response.status === 401) {
-    const replacement = await recoverSession().catch(() => null)
-
-    if (replacement !== null) {
-      response = await send(replacement)
-    }
+    // The one legitimate recovery: the token was refused, so replace it once and
+    // retry once.  A replacement that cannot be obtained is a session failure and
+    // is reported as one, rather than silently retried.
+    const replacement = await recoverSession()
+    response = await send(replacement)
   }
 
   if (!response.ok) {

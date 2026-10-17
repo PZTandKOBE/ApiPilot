@@ -91,6 +91,15 @@ export const createMockAgentService = (): MockAgentService => {
    */
   const tasks = new Map<string, AgentTaskResult>()
 
+  /**
+   * Plans by project/document series, so regeneration can allocate the next
+   * version and `listPlans` can answer from the same registry the tasks use.
+   */
+  const series = new Map<string, TestPlan[]>()
+
+  const seriesKey = (projectId: string, specId: string): string =>
+    projectId + ':' + specId
+
   const analyze = async (
     parsed: ParsedSpec,
     options: AnalyzeOptions = {},
@@ -159,7 +168,19 @@ export const createMockAgentService = (): MockAgentService => {
 
       const understanding = await analyze(parsed, options)
       const generated = await plan(understanding, parsed.spec, 'generated')
-      const taskId = 'task_' + generated.id
+      const key = seriesKey(input.projectId, parsed.spec.id)
+      const versions = series.get(key) ?? []
+
+      if (!input.regenerate && versions.length > 0) {
+        throw new AgentServiceError({
+          code: 'plan-exists',
+          messageKey: 'console.aiTest.errors.planExists',
+        })
+      }
+
+      const version = versions.reduce((highest, item) => Math.max(highest, item.version ?? 1), 0) + 1
+      const planId = version === 1 ? generated.id : generated.id + '_v' + version
+      const taskId = 'task_' + planId
 
       if (tasks.has(taskId)) {
         throw new AgentServiceError({
@@ -168,11 +189,38 @@ export const createMockAgentService = (): MockAgentService => {
         })
       }
 
+      const nextPlan: TestPlan = {
+        ...generated,
+        id: planId,
+        version,
+        isCurrent: true,
+        runCount: 0,
+      }
+
+      // The old versions remain, but only the newest one is current.  Updating
+      // the stored task results too keeps `loadTask(oldTaskId)` honest.
+      series.set(key, [
+        ...versions.map((item) => ({ ...item, isCurrent: false })),
+        nextPlan,
+      ])
+      for (const [id, stored] of tasks) {
+        if (
+          stored.plan !== null &&
+          stored.plan.projectId === input.projectId &&
+          stored.plan.specId === parsed.spec.id
+        ) {
+          tasks.set(id, {
+            ...stored,
+            plan: { ...stored.plan, isCurrent: false },
+          })
+        }
+      }
+
       const result: AgentTaskResult = {
         taskId,
         status: 'completed',
         understanding,
-        plan: generated,
+        plan: nextPlan,
       }
 
       tasks.set(taskId, result)
@@ -191,6 +239,13 @@ export const createMockAgentService = (): MockAgentService => {
       }
 
       return found
+    },
+
+    async listPlans(projectId: string) {
+      return [...series.values()]
+        .flat()
+        .filter((item) => item.projectId === projectId)
+        .map((item) => ({ ...item }))
     },
   }
 }

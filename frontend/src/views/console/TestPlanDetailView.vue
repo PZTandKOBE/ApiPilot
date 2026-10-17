@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { Back, MagicStick, Tickets } from '@element-plus/icons-vue'
 import { ElButton, ElIcon } from 'element-plus'
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ApprovalPanel from '@/components/console/Agent/ApprovalPanel.vue'
@@ -37,6 +37,16 @@ const plan = computed<TestPlanModel | null>(() => {
 
   return store.projectPlans.find((candidate) => candidate.id === planId) ?? null
 })
+
+onMounted(() => {
+  // A version this browser has never seen is a real destination: the plan list
+  // is server-backed, and opening an old version after a reload must work.
+  if (plan.value === null) void store.loadPlans()
+})
+
+const versionLabel = computed(() =>
+  t('console.plans.version', { version: plan.value?.version ?? 1 }),
+)
 </script>
 
 <template>
@@ -54,6 +64,24 @@ const plan = computed<TestPlanModel | null>(() => {
           <ElIcon :size="11"><Back /></ElIcon>
           {{ t('console.plans.backToList') }}
         </RouterLink>
+
+        <div class="mt-2 flex flex-wrap items-center gap-2">
+          <span
+            class="rounded border border-[var(--console-border)] px-1.5 py-px font-mono text-[10px] text-[var(--console-text-muted)]"
+          >
+            {{ versionLabel }}
+          </span>
+          <span
+            v-if="plan.isCurrent === true"
+            class="rounded border px-1.5 py-px text-[10px] whitespace-nowrap"
+            :style="{
+              color: 'var(--accent-soft)',
+              borderColor: 'color-mix(in srgb, var(--accent) 34%, transparent)',
+            }"
+          >
+            {{ t('console.plans.current') }}
+          </span>
+        </div>
       </template>
     </ConsolePageHeader>
 

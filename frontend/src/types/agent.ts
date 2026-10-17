@@ -278,6 +278,16 @@ export interface TestStep {
   readonly produces: string | null
   /** Variables this step consumes. */
   readonly consumes: readonly string[]
+  /**
+   * The JSON request body this step sends, exactly as the plan states it.
+   * Absent on a plan that predates request bodies.
+   */
+  readonly body?: unknown
+  /**
+   * Whether the body is a body at all. A step with no body and a step that
+   * sends the JSON literal null are different requests.
+   */
+  readonly body_present?: boolean
 }
 
 export const ASSERTION_KINDS = ['status', 'field', 'schema', 'header'] as const
@@ -290,6 +300,11 @@ export interface TestAssertion {
   readonly target: string
   readonly expected: string
   readonly description: LocalizedText
+  /**
+   * The assert step this assertion reads, when the plan states one. Absent on
+   * plans generated before assertions carried their own step.
+   */
+  readonly stepId?: string | null
 }
 
 export interface TestScenario {
@@ -327,6 +342,20 @@ export interface TestPlan {
   readonly rejectedAt: string | null
   /** Free text typed by the reviewer; never generated. */
   readonly rejectionReason: string | null
+  /**
+   * The plan's version within its project/document series. The first plan is 1;
+   * a regeneration creates the next version under a new id. Absent on plans
+   * persisted before versioning existed.
+   */
+  readonly version?: number
+  /**
+   * Whether this is the highest version for its document. Currentness is
+   * independent of approval: a newer draft is current while the older approved
+   * version remains available.
+   */
+  readonly isCurrent?: boolean
+  /** Number of runs whose plan id points at this version, when the server supplies it. */
+  readonly runCount?: number
 }
 
 /* ------------------------------------------------------------------ *

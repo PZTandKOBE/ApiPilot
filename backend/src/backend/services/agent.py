@@ -79,7 +79,7 @@ from backend.services.runs import (
 )
 from backend.services.spec_identity import derive_spec_identity, probe_document, spec_id_for
 
-__all__ = ["create_task", "get_task", "process_task", "start_task"]
+__all__ = ["create_task", "get_task", "list_plans", "process_task", "start_task"]
 
 logger = logging.getLogger(__name__)
 
@@ -232,13 +232,14 @@ async def create_task(
         identity=identity,
     )
 
-    # The conflict rule, checked before the task exists.  A plan id is derived
-    # from the document's slug, so a second prompt against the same document
-    # names the same plan -- and a different prompt's result must never quietly
-    # replace the first one's.  Versioning and regeneration are a later phase;
-    # today the answer is a refusal.
-    if await _find_plan(session, project.id, spec.slug) is not None:
-        raise _request_error("plan-exists", 409, planId=f"plan_{spec.slug}")
+    # The ordinary first-generation rule: a second prompt against the same
+    # document names the same plan id, and a different prompt's result must not
+    # quietly replace the first one.  A caller that explicitly asked to
+    # regenerate skips this refusal; the version allocator assigns a new public
+    # id under a transaction-scoped lock instead.
+    if not payload.regenerate:
+        if await _find_plan(session, project.id, spec.slug) is not None:
+            raise _request_error("plan-exists", 409, planId=f"plan_{spec.slug}")
 
     task = AgentTask(
         project_id=project.id,
@@ -265,7 +266,12 @@ async def start_task(
     """The route's whole job: create the task, then run it."""
     task_id = await create_task(session, project_id=project_id, payload=payload)
 
-    return await process_task(session, task_id=task_id, variables=payload.variables)
+    return await process_task(
+        session,
+        task_id=task_id,
+        variables=payload.variables,
+        regenerate=payload.regenerate,
+    )
 
 # --------------------------------------------------------------------------- #
 # process
@@ -277,6 +283,7 @@ async def process_task(
     *,
     task_id: uuid.UUID,
     variables: Mapping[str, str] | None = None,
+    regenerate: bool = False,
 ) -> AgentTaskResponse:
     """Walk one task from `pending` to `completed` or `failed`.
 
@@ -305,12 +312,30 @@ async def process_task(
         analysis, planned = await _generate(
             session, row, task_id=task_id, progress=progress, forbidden=forbidden
         )
+
+        # Version 1 keeps the historical plan_{slug} id.  A regeneration takes
+        # the next version under a transaction-scoped lock, so two concurrent
+        # requests cannot both claim v2; the plan payload is re-keyed before the
+        # validator sees it, because the id is part of the contract.
+        plan = planned.plan
+        plan_version = 1
+        if regenerate:
+            plan_version, plan_id = await _next_plan_version(
+                session,
+                project_id=row["project_id"],
+                spec_id=row["spec_id"],
+                slug=row["slug"],
+            )
+            plan = plan.model_copy(update={"id": plan_id})
+        else:
+            plan_id = plan.id
+
         await agent_audit.set_stage(session, task_id=task_id, stage="validate")
         agent_plan.validate_plan(
-            planned.plan,
+            plan,
             project_id=row["project_public_id"],
             spec_id=spec_id_for(row["slug"]),
-            expected_plan_id=f"plan_{row['slug']}",
+            expected_plan_id=plan_id,
             forbidden_values=forbidden,
         )
     except PlanInvalid as invalid:
@@ -321,7 +346,13 @@ async def process_task(
         raise _stage_error(refusal.code, refusal.detail) from refusal
 
     await agent_audit.set_stage(session, task_id=task_id, stage="persist")
-    await _persist(session, row=row, plan=planned.plan, task_id=task_id)
+    await _persist(
+        session,
+        row=row,
+        plan=plan,
+        task_id=task_id,
+        version=plan_version,
+    )
     await _set_status(session, task_id, _COMPLETED)
     await agent_audit.complete(session, task_id=task_id)
     await session.commit()
@@ -499,7 +530,12 @@ async def _forbidden_values(
 
 
 async def _persist(
-    session: AsyncSession, *, row: Mapping[str, Any], plan: Any, task_id: uuid.UUID
+    session: AsyncSession,
+    *,
+    row: Mapping[str, Any],
+    plan: Any,
+    task_id: uuid.UUID,
+    version: int = 1,
 ) -> None:
     """Write the plan tree -- the only write of the four plan-side tables.
 
@@ -513,6 +549,7 @@ async def _persist(
         spec_id=row["spec_id"],
         plan=plan,
         agent_task_id=task_id,
+        version=version,
     )
 
 
@@ -724,6 +761,60 @@ async def _find_plan(session: AsyncSession, project_id: uuid.UUID, slug: str) ->
     ).scalar_one_or_none()
 
 
+async def _next_plan_version(
+    session: AsyncSession,
+    *,
+    project_id: uuid.UUID,
+    spec_id: uuid.UUID,
+    slug: str,
+) -> tuple[int, str]:
+    """The next version number and public id for a document's plan series.
+
+    The transaction-scoped advisory lock is the concurrency rule: two
+    regenerations of the same document serialise here, so the second one reads
+    the first one's committed row after it acquires the lock and picks the next
+    number.  The lock is released by the commit or rollback that ends the
+    persist transaction; a validation failure therefore leaves no version
+    reserved.
+
+    The historical first plan keeps ``plan_{slug}``; later versions append
+    ``_v{n}``.  A collision with a hand-written or older row is resolved by
+    advancing the number rather than by reusing an id.
+    """
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"plan-version:{project_id}:{spec_id}"},
+    )
+
+    latest = (
+        await session.execute(
+            text(
+                "SELECT version FROM test_plans "
+                "WHERE project_id = :project AND spec_id = :spec "
+                "ORDER BY version DESC, created_at DESC LIMIT 1"
+            ),
+            {"project": project_id, "spec": spec_id},
+        )
+    ).scalar_one_or_none()
+
+    version = 1 if latest is None else int(latest) + 1
+
+    while True:
+        candidate = f"plan_{slug}" if version == 1 else f"plan_{slug}_v{version}"
+        taken = (
+            await session.execute(
+                text(
+                    "SELECT 1 FROM test_plans "
+                    "WHERE project_id = :project AND public_id = :public_id"
+                ),
+                {"project": project_id, "public_id": candidate},
+            )
+        ).scalar_one_or_none()
+        if taken is None:
+            return version, candidate
+        version += 1
+
+
 _PLAN_ROW = """
     SELECT test_plans.id AS id,
            test_plans.public_id AS public_id,
@@ -735,7 +826,16 @@ _PLAN_ROW = """
            test_plans.created_at AS created_at,
            test_plans.approved_at AS approved_at,
            test_plans.rejected_at AS rejected_at,
-           test_plans.rejection_reason AS rejection_reason
+           test_plans.rejection_reason AS rejection_reason,
+           test_plans.version AS version,
+           test_plans.project_id AS project_id,
+           test_plans.spec_id AS spec_id,
+           (SELECT count(*) FROM test_runs
+            WHERE test_runs.plan_id = test_plans.id) AS run_count,
+           (SELECT max(versions.version) FROM test_plans versions
+            WHERE versions.project_id = test_plans.project_id
+              AND versions.spec_id = test_plans.spec_id
+              AND versions.deleted_at IS NULL) AS current_version
     FROM test_plans
     WHERE test_plans.agent_task_id = :task
 """
@@ -774,12 +874,61 @@ _PLAN_ASSERTIONS = """
            test_assertions.assertion_type AS assertion_type,
            test_assertions.target AS target,
            test_assertions.expected_value AS expected_value,
-           test_assertions.description AS description
+           test_assertions.description AS description,
+           test_steps.step_key AS step_key
     FROM test_assertions
     JOIN test_scenarios ON test_scenarios.id = test_assertions.scenario_id
+    LEFT JOIN test_steps ON test_steps.id = test_assertions.step_id
     WHERE test_scenarios.plan_id = :plan
     ORDER BY test_scenarios.sort_order, test_assertions.assertion_key
 """
+
+_PLAN_LIST = """
+    SELECT test_plans.id AS id,
+           test_plans.public_id AS public_id,
+           test_plans.name AS name,
+           test_plans.description AS goal,
+           test_plans.status AS status,
+           test_plans.risk_level AS risk_level,
+           test_plans.source AS source,
+           test_plans.created_at AS created_at,
+           test_plans.approved_at AS approved_at,
+           test_plans.rejected_at AS rejected_at,
+           test_plans.rejection_reason AS rejection_reason,
+           test_plans.version AS version,
+           test_plans.project_id AS project_id,
+           test_plans.spec_id AS spec_id,
+           api_specs.slug AS slug,
+           (SELECT count(*) FROM test_runs
+            WHERE test_runs.plan_id = test_plans.id) AS run_count,
+           (SELECT max(versions.version) FROM test_plans versions
+            WHERE versions.project_id = test_plans.project_id
+              AND versions.spec_id = test_plans.spec_id
+              AND versions.deleted_at IS NULL) AS current_version
+    FROM test_plans
+    JOIN api_specs ON api_specs.id = test_plans.spec_id
+    WHERE test_plans.project_id = :project
+      AND test_plans.deleted_at IS NULL
+    ORDER BY api_specs.slug, test_plans.version DESC, test_plans.created_at DESC
+"""
+
+
+def _config_body(config: object) -> Any:
+    """The raw JSON body stored in a step config, or None when it stores none.
+
+    The caller distinguishes the two through bodyPresent, not through this value:
+    a plan may legally send the JSON literal null, and that is a body.
+    """
+    if not isinstance(config, Mapping) or "body" not in config:
+        return None
+    return config["body"]
+
+
+def _config_flag(config: object, key: str) -> bool:
+    """A config flag, read without letting a falsy value mean "missing"."""
+    if not isinstance(config, Mapping):
+        return False
+    return config.get(key) is True
 
 
 def _config_value(config: Any, key: str) -> str | None:
@@ -797,21 +946,22 @@ def _config_value(config: Any, key: str) -> str | None:
     return value if isinstance(value, str) and value != "" else None
 
 
-async def _plan_tree(
-    session: AsyncSession, *, task_id: uuid.UUID, project_id: str, spec_id: str
-) -> AgentPlanResponse | None:
-    """The plan a task wrote, read back as the tree the console reviews.
+async def _plan_response(
+    session: AsyncSession,
+    plan: Mapping[str, Any],
+    *,
+    project_id: str,
+    spec_id: str,
+    is_current: bool,
+    run_count: int,
+) -> AgentPlanResponse:
+    """Build one plan tree from a ``test_plans`` row.
 
-    Four statements whatever the plan holds -- the row, its scenarios, their
-    steps and their assertions -- because the alternative is one query per row
-    and a plan is not small.  `test_plans.agent_task_id` is the link: the
-    relationship the schema reserved is finally the one the read path uses.
+    Four statements whatever the plan holds -- the row already arrived as a
+    mapping, and this adds scenarios, steps and assertions.  The list endpoint
+    reuses this builder so a version read from the collection is the same tree
+    the task endpoint returns.
     """
-    plan = (await session.execute(text(_PLAN_ROW), {"task": task_id})).mappings().one_or_none()
-
-    if plan is None:
-        return None
-
     scenarios = (await session.execute(text(_PLAN_SCENARIOS), {"plan": plan["id"]})).mappings().all()
     steps = (await session.execute(text(_PLAN_STEPS), {"plan": plan["id"]})).mappings().all()
     assertions = (
@@ -834,6 +984,12 @@ async def _plan_tree(
                 path=_config_value(row["config"], "path"),
                 produces=row["produces"],
                 consumes=list(row["consumes"] or []),
+                # The request body the plan stored.  Read from the same config
+                # blob as method and path, and read as the raw JSON value: the
+                # key's presence is what says a body exists, so a body of null
+                # (a legal JSON body) must not collapse into "no body".
+                body=_config_body(row["config"]),
+                body_present=_config_flag(row["config"], "bodyPresent"),
             )
         )
 
@@ -848,6 +1004,7 @@ async def _plan_tree(
                 # carried, which is what create-run reads back too.
                 expected=row["expected_value"] if isinstance(row["expected_value"], str) else "",
                 description=row["description"],
+                step_id=row["step_key"],
             )
         )
 
@@ -855,6 +1012,9 @@ async def _plan_tree(
         id=plan["public_id"],
         project_id=project_id,
         spec_id=spec_id,
+        version=plan["version"],
+        is_current=is_current,
+        run_count=run_count,
         name=plan["name"],
         goal=plan["goal"],
         risk_level=plan["risk_level"],
@@ -878,6 +1038,67 @@ async def _plan_tree(
         rejected_at=plan["rejected_at"],
         rejection_reason=plan["rejection_reason"],
     )
+
+
+async def _plan_tree(
+    session: AsyncSession, *, task_id: uuid.UUID, project_id: str, spec_id: str
+) -> AgentPlanResponse | None:
+    """The plan a task wrote, read back as the tree the console reviews.
+
+    ``test_plans.agent_task_id`` is the link: the relationship the schema
+    reserved is finally the one the read path uses.  ``version`` and
+    ``is_current`` travel with the tree because a task can be read back after
+    a later version has been generated.
+    """
+    plan = (await session.execute(text(_PLAN_ROW), {"task": task_id})).mappings().one_or_none()
+
+    if plan is None:
+        return None
+
+    current_version = plan["current_version"] or plan["version"]
+
+    return await _plan_response(
+        session,
+        plan,
+        project_id=project_id,
+        spec_id=spec_id,
+        is_current=plan["version"] == current_version,
+        run_count=plan["run_count"],
+    )
+
+
+async def list_plans(
+    session: AsyncSession, *, project_id: str
+) -> list[AgentPlanResponse]:
+    """Every live plan version in a project, with its tree and run count.
+
+    A plan's currentness is derived from ``MAX(version)`` for its
+    ``(project_id, spec_id)`` series rather than stored: the version column
+    already exists, and a second "is_current" flag would be a second source of
+    truth that a failed regenerate could leave wrong.  Soft-deleted plans are
+    excluded from the collection but still occupy their version number.
+    """
+    project = await _lookup_project(session, project_id)
+
+    rows = (
+        await session.execute(text(_PLAN_LIST), {"project": project.id})
+    ).mappings().all()
+
+    plans: list[AgentPlanResponse] = []
+    for row in rows:
+        current_version = row["current_version"] or row["version"]
+        plans.append(
+            await _plan_response(
+                session,
+                row,
+                project_id=project_id,
+                spec_id=spec_id_for(row["slug"]),
+                is_current=row["version"] == current_version,
+                run_count=row["run_count"],
+            )
+        )
+
+    return plans
 
 
 def _understanding_response(

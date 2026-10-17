@@ -489,6 +489,12 @@ export interface ConsoleMessageSchema {
       readonly sourceGenerated: string
       readonly sourceHandoff: string
       readonly executionNextPhase: string
+      readonly regenerate: string
+      readonly regenerateTitle: string
+      readonly regenerateBody: string
+      readonly regenerateConfirm: string
+      readonly regenerateCancel: string
+      readonly regenerateSuccess: string
     }
 
     readonly status: {
@@ -586,6 +592,10 @@ export interface ConsoleMessageSchema {
     readonly viewAll: string
     readonly notFound: string
     readonly notFoundBody: string
+    readonly version: string
+    readonly current: string
+    readonly runs: string
+    readonly retry: string
   }
 
   /**
@@ -608,6 +618,7 @@ export interface ConsoleMessageSchema {
     readonly blocked: string
 
     readonly plan: string
+    readonly planId: string
     readonly environment: string
     readonly baseUrl: string
     readonly variables: string

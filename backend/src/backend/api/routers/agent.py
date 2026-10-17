@@ -6,6 +6,7 @@ section 5): **a collection lives under its project, an item is addressed by its
 own id.**
 
 * `POST /api/projects/{project_id}/agent/tasks` -- ask the agent for a plan.
+* `GET  /api/projects/{project_id}/plans`     -- read every plan version.
 * `GET  /api/agent/tasks/{task_id}`          -- read the task and its plan.
 
 The alternative the brief floated, `POST /api/agent/tasks` with the project only
@@ -32,7 +33,11 @@ from fastapi import APIRouter, Path, status
 
 from backend.api.deps import CurrentGuestSessionDep, SessionDep
 from backend.api.errors import ERROR_RESPONSES
-from backend.schemas.agent import AgentTaskCreateRequest, AgentTaskResponse
+from backend.schemas.agent import (
+    AgentPlanResponse,
+    AgentTaskCreateRequest,
+    AgentTaskResponse,
+)
 from backend.schemas.agent_audit import AgentTaskAuditResponse
 from backend.services import agent, guest_access
 
@@ -58,6 +63,32 @@ TaskId = Annotated[
         examples=["6f1c1f4e-4a4e-4e2a-9f0e-3a1d2b3c4d5e"],
     ),
 ]
+
+
+@router.get(
+    "/projects/{project_id}/plans",
+    response_model=list[AgentPlanResponse],
+    summary="Read a project's test plan versions",
+    responses=ERROR_RESPONSES,
+)
+async def list_project_plans(
+    project_id: ProjectId,
+    session: SessionDep,
+    guest: CurrentGuestSessionDep,
+) -> list[AgentPlanResponse]:
+    """Every live plan version in a project, newest version first per document.
+
+    The collection is project-scoped, like the runs collection.  Each item is
+    the same tree the task endpoint returns, plus ``version``, ``isCurrent``
+    and ``runCount``; currentness is the highest version for the document and
+    is independent of approval.  Old versions remain in the list, so a reviewer
+    can open the plan a historical run actually executed.
+    """
+    await guest_access.require_guest_project_access(
+        session, project_public_id=project_id, guest=guest
+    )
+
+    return await agent.list_plans(session, project_id=project_id)
 
 
 @router.post(

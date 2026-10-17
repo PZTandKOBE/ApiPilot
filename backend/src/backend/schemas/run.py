@@ -124,6 +124,21 @@ class PlanStep(Schema):
         default=None, description="Variable this step produces, for `extract` steps."
     )
     consumes: list[str] = Field(default_factory=list)
+    body: Any | None = Field(
+        default=None,
+        description=(
+            "The JSON request body this step sends, exactly as the plan states it. "
+            "Any JSON value: object, array, string, number, boolean or null."
+        ),
+    )
+    body_present: bool = Field(
+        default=False,
+        description=(
+            "Whether body is a body at all. A step with no request body and a step "
+            "that sends the JSON literal null are different requests, and body=None "
+            "cannot tell them apart."
+        ),
+    )
 
 
 class PlanAssertion(Schema):
@@ -134,6 +149,15 @@ class PlanAssertion(Schema):
     target: str = Field(description="Dotted path within the response, e.g. `body.token`.")
     expected: str
     description: LocalizedText
+    step_id: str | None = Field(
+        default=None,
+        description=(
+            "The assert step this assertion belongs to, when the plan states one. "
+            "The executor judges it against the response current at that step. A "
+            "plan that predates the field leaves it null and keeps the scenario-level "
+            "fallback the run snapshot has always used."
+        ),
+    )
 
 
 class PlanScenario(Schema):
@@ -162,6 +186,22 @@ class PlanPayload(Schema):
     id: str
     project_id: str
     spec_id: str
+    # Read-back metadata added to the agent response when plan versions were
+    # introduced.  The client sends the plan it was shown, so the create-run
+    # schema must accept these fields; run creation does not use them to choose
+    # or rewrite a version (the plan row it names is already the authority).
+    version: int | None = Field(
+        default=None,
+        description="test_plans.version, when the plan came from the versioned API.",
+    )
+    is_current: bool | None = Field(
+        default=None,
+        description="Whether the plan was current when it was read; presentation metadata.",
+    )
+    run_count: int | None = Field(
+        default=None,
+        description="Runs already pointing at this plan when it was read; presentation metadata.",
+    )
     name: LocalizedText
     goal: LocalizedText
     risk_level: RiskLevel

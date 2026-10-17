@@ -178,6 +178,9 @@ const projectTasksPath = (projectId: string): string =>
 
 const taskPath = (taskId: string): string => '/api/agent/tasks/' + encodeURIComponent(taskId)
 
+const projectPlansPath = (projectId: string): string =>
+  '/api/projects/' + encodeURIComponent(projectId) + '/plans'
+
 const toTaskResult = (body: AgentTaskWireResponse): AgentTaskResult => {
   const status = asTaskStatus(body?.status)
 
@@ -236,5 +239,20 @@ export const createHttpAgentService = (): AgentService => ({
 
       return toTaskResult(body)
     }, 'task-not-found', LOAD_FAILED)
+  },
+
+  async listPlans(projectId: string) {
+    return guarded(async () => {
+      const body = await request<readonly unknown[]>(projectPlansPath(projectId))
+
+      if (!Array.isArray(body) || !body.every((plan) => planIsRenderable(plan))) {
+        throw new AgentServiceError({
+          code: 'generate-failed',
+          messageKey: GENERATE_FAILED,
+        })
+      }
+
+      return body as readonly TestPlan[]
+    }, 'generate-failed', GENERATE_FAILED)
   },
 })

@@ -167,6 +167,17 @@ describe('understanding', () => {
 })
 
 describe('the approval boundary in the rendered page', () => {
+  it('offers regeneration once a plan exists', async () => {
+    const agent = useAgentStore()
+
+    await agent.loadDemoSpec()
+    await agent.analyzeSpec()
+
+    const html = await render()
+    expect(has(html, 'Regenerate plan')).toBe(true)
+    expect(has(html, 'Version 1')).toBe(true)
+  })
+
   it('keeps Run disabled until the plan is approved', async () => {
     const agent = await loadAndAnalyse()
     await agent.generatePlan()

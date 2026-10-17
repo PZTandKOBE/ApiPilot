@@ -23,7 +23,7 @@ Three rules are inherited from the frozen contract rather than invented here:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Any
 
 from pydantic import Field
 
@@ -90,6 +90,14 @@ class AgentTaskCreateRequest(Schema):
             "They are scanned for leaks and then dropped: nothing persists them."
         ),
     )
+    regenerate: bool = Field(
+        default=False,
+        description=(
+            "False is the ordinary first-generation contract: an existing plan id "
+            "is refused with 409 plan-exists. True creates a new version in the "
+            "same project/document series and never overwrites the old plan."
+        ),
+    )
 
 
 class AgentAssertionResponse(Schema):
@@ -100,6 +108,14 @@ class AgentAssertionResponse(Schema):
     target: str
     expected: str = Field(description="`expected_value`, stored as the string it is.")
     description: LocalizedText | None = None
+    step_id: str | None = Field(
+        default=None,
+        description=(
+            "test_steps.step_key of the assert step this assertion reads, or null "
+            "for a plan-written-before binding.  Round-trips the plan so a run "
+            "created from it judges each group against its own response."
+        ),
+    )
 
 
 class AgentStepResponse(Schema):
@@ -121,6 +137,8 @@ class AgentStepResponse(Schema):
     method: str | None = None
     path: str | None = None
     produces: str | None = None
+    body: Any | None = None
+    body_present: bool = False
     consumes: list[str] = Field(default_factory=list)
 
 
@@ -159,6 +177,25 @@ class AgentPlanResponse(Schema):
     id: str = Field(description="test_plans.public_id -- the plan's stable key.")
     project_id: str
     spec_id: str
+    version: int = Field(
+        default=1,
+        description=(
+            "test_plans.version. The first plan for a document is version 1; each "
+            "regeneration creates the next version under a new public id."
+        ),
+    )
+    is_current: bool = Field(
+        default=True,
+        description=(
+            "Whether this is the highest version for its project/document. "
+            "Currentness is independent of approval: a newer draft is current "
+            "while the older approved version remains available."
+        ),
+    )
+    run_count: int = Field(
+        default=0,
+        description="Number of test_runs whose plan_id points at this version.",
+    )
     name: LocalizedText
     goal: LocalizedText | None = Field(
         default=None, description="`test_plans.description`, the only prose column."

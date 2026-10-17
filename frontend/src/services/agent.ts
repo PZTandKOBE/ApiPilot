@@ -101,6 +101,12 @@ export interface AgentTaskInput {
   readonly environmentId: string | null
   readonly prompt: string
   readonly variables: Readonly<Record<string, string>>
+  /**
+   * False is the ordinary first-generation request. True asks the server to
+   * create the next version of the same document's plan instead of refusing an
+   * existing plan with `plan-exists`.
+   */
+  readonly regenerate?: boolean
 }
 
 /** Mirrors `AgentTaskStatus` in the backend's `schemas/agent.py`. */
@@ -150,6 +156,15 @@ export interface AgentService {
 
   /** A task that already ran, as stored. */
   getTask(taskId: string): Promise<AgentTaskResult>
+
+  /**
+   * Every live plan version in a project, read from the server.
+   *
+   * The plan list is server-backed so version history survives a reload and a
+   * different browser; the local store still owns this browser's approval
+   * choices and merges them over the server's draft state.
+   */
+  listPlans(projectId: string): Promise<readonly TestPlan[]>
 }
 
 /** Which implementation the console gets. */

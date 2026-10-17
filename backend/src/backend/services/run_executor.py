@@ -117,6 +117,9 @@ _ACTIVE_STATUSES = (QUEUED, RUNNING)
 MISSING_VARIABLE = "missing-runtime-variable"
 TRANSPORT_ERROR = "transport-error"
 EXTRACT_FAILED = "extract-failed"
+
+# The side an existence assertion stands for; see evaluate_assertion.
+PRESENT_SENTINEL = "present"
 NOT_EXECUTABLE = "not-executable"
 EXECUTOR_FAILED = "executor-failed"
 ASSERTION_FAILED = "assertion-failed"
@@ -204,6 +207,8 @@ class _Step:
     method: str | None
     path: str | None
     produces: str | None
+    body: Any | None = None
+    body_present: bool = False
 
 
 @dataclass(frozen=True)
@@ -467,6 +472,14 @@ def evaluate_assertion(assertion: _Assertion, response: _Response) -> tuple[str,
         if found is _MISSING:
             return FAILED, None, "the response body did not carry this field"
 
+        # "present" is the sentinel the planners have always written for "this
+        # field has to exist". It is not a value the response could hold, so
+        # comparing against it made every existence assertion fail against a
+        # field that was right there. The sentinel is kept as the wire form
+        # (older plans carry it) and read as what it means.
+        if assertion.expected == PRESENT_SENTINEL:
+            return PASSED, _as_text(found), None
+
         return _verdict(_as_text(found), assertion.expected), _as_text(found), None
 
     if assertion.kind == "schema":
@@ -599,6 +612,35 @@ async def _load_produced(session: AsyncSession, step_ids: list[uuid.UUID]) -> di
     return {step_id: produces for step_id, produces in rows if produces is not None}
 
 
+async def _load_bodies(
+    session: AsyncSession, step_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[Any, bool]]:
+    """The request body each step sends, read from the plan step it came from.
+
+    run_steps stays self-contained for everything it snapshots, but the body is
+    not one of those columns: it lives in test_steps.config, the JSONB blob the
+    plan already materialises, and is found through the same source_step_id link
+    produces uses.  A step whose plan row is gone has no body, which is the same
+    as a plan that never had one.
+    """
+    if not step_ids:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(RunStep.id, TestStep.config)
+            .join(TestStep, TestStep.id == RunStep.source_step_id)
+            .where(RunStep.id.in_(step_ids))
+        )
+    ).all()
+
+    bodies: dict[uuid.UUID, tuple[Any, bool]] = {}
+    for step_id, config in rows:
+        if isinstance(config, dict) and config.get("bodyPresent") is True:
+            bodies[step_id] = (config.get("body"), True)
+    return bodies
+
+
 async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario]:
     """The run's scenarios, steps and assertions, each level ordered explicitly.
 
@@ -652,6 +694,7 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
     ).all()
 
     produced = await _load_produced(session, [row.id for row in step_rows])
+    bodies = await _load_bodies(session, [row.id for row in step_rows])
 
     steps_by_scenario: dict[uuid.UUID, list[_Step]] = {}
     for row in step_rows:
@@ -663,6 +706,8 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
                 method=row.method,
                 path=row.path,
                 produces=produced.get(row.id),
+                body=bodies.get(row.id, (None, False))[0],
+                body_present=bodies.get(row.id, (None, False))[1],
             )
         )
 
@@ -987,7 +1032,14 @@ async def _execute_step(
         url = url + ("&" if "?" in url else "?") + "&".join(query)
 
     try:
-        called = await client.request(step.method, url, headers=headers)
+        request_options: dict[str, Any] = {"headers": headers}
+
+        if step.body_present:
+            # A body the plan states is sent as JSON, null included.  A step with
+            # no body sends none, which is what every older plan does.
+            request_options["json"] = step.body
+
+        called = await client.request(step.method, url, **request_options)
     except httpx.HTTPError as exc:
         # The exception's own text names the URL, so it goes to the log and the
         # client gets a sentence that describes the failure without repeating it.
@@ -1109,6 +1161,59 @@ async def _record_evidence(
 # --------------------------------------------------------------------------- #
 
 
+async def _judge_assertions(
+    *,
+    session: AsyncSession,
+    run_id: uuid.UUID,
+    scenario: _Scenario,
+    assertions: Sequence[_Assertion],
+    response: _Response | None,
+    step_keys: Mapping[uuid.UUID, str],
+) -> bool:
+    """Judge a step's assertions against that step's response.
+
+    Returns whether any assertion failed.  Every assertion is written even when
+    one fails, because the report is per assertion, not just a step verdict.
+    """
+    failed = False
+
+    for assertion in assertions:
+        if response is None:
+            status, actual, reason = SKIPPED, None, "there was no response to check"
+        else:
+            status, actual, reason = evaluate_assertion(assertion, response)
+
+        await _write_assertion(session, assertion, status=status, actual=actual, reason=reason)
+
+        checkpoint_key = (
+            step_keys.get(assertion.step_id) if assertion.step_id is not None else None
+        )
+
+        await append_run_event(
+            session,
+            run_id=run_id,
+            event_type="assertion.completed",
+            payload={
+                "scenarioId": scenario.key,
+                # The step the assertion hangs off, or -- for a scenario with no
+                # steps at all -- the assertion's own key, which is the fallback
+                # the console's script uses for the same case.
+                "stepId": checkpoint_key or assertion.key,
+                "assertionStepId": checkpoint_key,
+                "assertionId": assertion.key,
+                "status": status,
+                "expected": _as_text(assertion.expected),
+                "actual": actual,
+            },
+        )
+        await session.commit()
+
+        if status == FAILED:
+            failed = True
+
+    return failed
+
+
 async def _run_scenario(
     *,
     session: AsyncSession,
@@ -1117,13 +1222,13 @@ async def _run_scenario(
     auth: tuple[str, Mapping[str, Any]] | None,
     client: httpx.AsyncClient,
 ) -> _ScenarioOutcome:
-    """Walk the scenario's steps, then judge its assertions.
+    """Walk the scenario's steps, judging each step's assertions when it is reached.
 
-    The order is the plan's: steps by ``sort_order``, assertions after them by
-    ``assertion_key``.  A step that fails stops the scenario -- the steps after it
-    never run and are recorded as skipped -- and the assertions are left as they
-    were, because there is no response to judge.  Whether the *next* scenario
-    runs is the caller's decision, and it runs.
+    The order is the plan's: steps by ``sort_order``, assertions by
+    ``assertion_key``.  An assertion names the assert step it belongs to, so it
+    reads the response of the request that step follows -- not whatever response
+    happened to be last in the scenario.  A step that fails stops the scenario:
+    the steps after it never run and are recorded as skipped.
 
     The step the assertions belong to finishes **after** them.  Its outcome is
     their outcome: reporting it complete first and then correcting it would put
@@ -1135,17 +1240,28 @@ async def _run_scenario(
     await session.commit()
 
     step_keys = {step.id: step.key for step in scenario.steps}
+    step_ids = set(step_keys)
+
+    # The run snapshot gives every assertion a step.  ``checkpoint_id`` is the
+    # historical fallback -- the first assert step, or the last step -- for a
+    # plan written before assertions carried their own ``stepId``.
     checkpoint_id = next(
         (assertion.step_id for assertion in scenario.assertions if assertion.step_id is not None),
         None,
     )
 
+    grouped: dict[uuid.UUID, list[_Assertion]] = {}
+    unbound: list[_Assertion] = []
+    for assertion in scenario.assertions:
+        owner = assertion.step_id if assertion.step_id in step_ids else checkpoint_id
+        if owner is None:
+            unbound.append(assertion)
+        else:
+            grouped.setdefault(owner, []).append(assertion)
+
     response: _Response | None = None
     failure: _StepOutcome | None = None
     failed_step: _Step | None = None
-    deferred: _Step | None = None
-    deferred_evidence: Sequence[Mapping[str, Any]] = ()
-    deferred_duration = 0
     started_any = False
 
     for step in scenario.steps:
@@ -1187,11 +1303,14 @@ async def _run_scenario(
         duration_ms = max(0, round((time.monotonic() - clock) * 1000))
         finished_at = datetime.now(timezone.utc)
 
+        step_assertions = grouped.get(step.id, ())
         if step.kind == "assert":
             evidence = [
                 {
                     "label": {"key": EVIDENCE_CHECKED},
-                    "value": str(len(scenario.assertions)),
+                    # The assertions this step actually decided, not every
+                    # assertion in the scenario.
+                    "value": str(len(step_assertions)),
                 }
             ]
 
@@ -1235,11 +1354,46 @@ async def _run_scenario(
             await session.commit()
             break
 
-        if step.id == checkpoint_id and scenario.assertions:
-            deferred = step
-            deferred_evidence = evidence
-            deferred_duration = duration_ms
-            continue
+        assertion_failed = False
+        if step_assertions:
+            assertion_failed = await _judge_assertions(
+                session=session,
+                run_id=run_id,
+                scenario=scenario,
+                assertions=step_assertions,
+                response=response,
+                step_keys=step_keys,
+            )
+
+        if assertion_failed:
+            failure = _StepOutcome(ASSERTION_FAILED, "one or more assertions failed")
+            failed_step = step
+
+            await _finish_step(
+                session,
+                step,
+                status=FAILED,
+                now=finished_at,
+                duration_ms=duration_ms,
+                code=ASSERTION_FAILED,
+                detail="one or more assertions failed",
+            )
+            await _record_evidence(session, run_id=run_id, step=step, evidence=evidence)
+            await append_run_event(
+                session,
+                run_id=run_id,
+                event_type="step.failed",
+                payload={
+                    "scenarioId": scenario.key,
+                    "stepId": step.key,
+                    "durationMs": duration_ms,
+                    "failure": run_failure_dict(
+                        ASSERTION_FAILED, "one or more assertions failed"
+                    ),
+                },
+            )
+            await session.commit()
+            break
 
         await _finish_step(session, step, status=PASSED, now=finished_at, duration_ms=duration_ms)
         items = await _record_evidence(session, run_id=run_id, step=step, evidence=evidence)
@@ -1258,74 +1412,17 @@ async def _run_scenario(
 
     assertion_failed = False
 
-    if failure is None:
-        for assertion in scenario.assertions:
-            if response is None:
-                status, actual, reason = SKIPPED, None, "there was no response to check"
-            else:
-                status, actual, reason = evaluate_assertion(assertion, response)
-
-            await _write_assertion(session, assertion, status=status, actual=actual, reason=reason)
-
-            checkpoint_key = step_keys.get(assertion.step_id) if assertion.step_id is not None else None
-
-            await append_run_event(
-                session,
-                run_id=run_id,
-                event_type="assertion.completed",
-                payload={
-                    "scenarioId": scenario.key,
-                    # The step the assertion hangs off, or -- for a scenario with
-                    # no steps at all -- the assertion's own key, which is the
-                    # fallback the console's script uses for the same case.
-                    "stepId": checkpoint_key or assertion.key,
-                    "assertionStepId": checkpoint_key,
-                    "assertionId": assertion.key,
-                    "status": status,
-                    "expected": _as_text(assertion.expected),
-                    "actual": actual,
-                },
-            )
-            await session.commit()
-
-            if status == FAILED:
-                assertion_failed = True
-
-    if deferred is not None:
-        step_status = FAILED if assertion_failed else PASSED
-        items = await _record_evidence(
-            session, run_id=run_id, step=deferred, evidence=deferred_evidence
-        )
-        await _finish_step(
-            session,
-            deferred,
-            status=step_status,
-            now=datetime.now(timezone.utc),
-            duration_ms=deferred_duration,
-            code=ASSERTION_FAILED if assertion_failed else None,
-            detail="one or more assertions failed" if assertion_failed else None,
-        )
-
-        payload: dict[str, Any] = {
-            "scenarioId": scenario.key,
-            "stepId": deferred.key,
-            "durationMs": deferred_duration,
-        }
-
-        if assertion_failed:
-            payload["failure"] = run_failure_dict(
-                ASSERTION_FAILED, "one or more assertions failed"
-            )
-        else:
-            payload["evidence"] = items
-
-        await append_run_event(
-            session,
+    if failure is None and unbound:
+        # A scenario with no steps at all has nowhere to hang its assertions;
+        # they keep the historical after-the-loop treatment.
+        assertion_failed = await _judge_assertions(
+            session=session,
             run_id=run_id,
-            event_type=("step.failed" if assertion_failed else "step.completed"),
-            payload=payload,
+            scenario=scenario,
+            assertions=unbound,
+            response=response,
+            step_keys=step_keys,
         )
-        await session.commit()
 
     if failure is not None:
         await _skip_pending_steps(session, [scenario.id])
@@ -1340,13 +1437,13 @@ async def _run_scenario(
 
     return _ScenarioOutcome(
         status=status,
-        # A step that failed outright names itself; a scenario that failed on its
-        # assertions names the step those assertions belong to, which is the step
-        # the console paints red.
+        # A step that failed outright names itself; an assertion failure names
+        # the step the assertion was judged at, which is the step the console
+        # paints red.
         failed_step_key=(
             failed_step.key
             if failed_step is not None
-            else (deferred.key if assertion_failed and deferred is not None else None)
+            else None
         ),
         code=(
             failure.code

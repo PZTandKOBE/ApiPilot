@@ -97,6 +97,96 @@ describe('running a task', () => {
   })
 })
 
+describe('recovering a server plan the browser did not have', () => {
+  it('loads the version list before deciding what the action means', async () => {
+    const { agent } = setup()
+
+    await agent.loadDemoSpec()
+    await agent.analyzeSpec()
+    const planId = agent.activePlan?.id
+    expect(planId).toBeDefined()
+
+    agent.resetSpec()
+    expect(agent.projectPlans).toHaveLength(0)
+
+    await agent.loadDemoSpec()
+    await agent.loadPlans()
+
+    expect(agent.activePlan?.id).toBe(planId)
+    expect(agent.planError).toBeNull()
+  })
+
+  it('turns an ordinary plan-exists refusal into a refreshed plan list', async () => {
+    const { agent } = setup()
+
+    await agent.loadDemoSpec()
+    await agent.analyzeSpec()
+    const planId = agent.activePlan?.id
+
+    agent.resetSpec()
+    await agent.loadDemoSpec()
+
+    await agent.generatePlan()
+
+    expect(agent.planError?.code).toBe('plan-exists')
+    expect(agent.projectPlans).toHaveLength(1)
+    expect(agent.activePlan?.id).toBe(planId)
+  })
+})
+
+describe('regenerating a plan', () => {
+  it('creates an independent next version and leaves the approved old plan alone', async () => {
+    const { agent } = setup()
+
+    await agent.loadDemoSpec()
+    await agent.analyzeSpec()
+
+    const first = agent.activePlan
+    expect(first).not.toBeNull()
+    if (first === null) return
+
+    agent.approvePlan(first.id)
+    const approved = agent.projectPlans.find((plan) => plan.id === first.id)
+    expect(approved?.status).toBe('approved')
+    const approvedScenarios = JSON.stringify(approved?.scenarios)
+
+    await agent.regeneratePlan()
+
+    expect(agent.planError).toBeNull()
+    expect(agent.projectPlans).toHaveLength(2)
+    expect(agent.activePlan?.id).toBe(first.id + '_v2')
+    expect(agent.activePlan?.version).toBe(2)
+    expect(agent.activePlan?.isCurrent).toBe(true)
+    expect(agent.activePlan?.status).toBe('draft')
+
+    const old = agent.projectPlans.find((plan) => plan.id === first.id)
+    expect(old?.status).toBe('approved')
+    expect(old?.approvedAt).toBe(approved?.approvedAt)
+    expect(JSON.stringify(old?.scenarios)).toBe(approvedScenarios)
+    expect(old?.isCurrent).toBe(false)
+  })
+
+  it('merges server versions without losing the local approval', async () => {
+    const { agent } = setup()
+
+    await agent.loadDemoSpec()
+    await agent.analyzeSpec()
+    const first = agent.activePlan
+    expect(first).not.toBeNull()
+    if (first === null) return
+
+    agent.approvePlan(first.id)
+    await agent.regeneratePlan()
+    await agent.loadPlans()
+
+    expect(agent.plansError).toBeNull()
+    expect(agent.projectPlans).toHaveLength(2)
+    expect(agent.projectPlans.find((plan) => plan.id === first.id)?.status).toBe('approved')
+    expect(agent.activePlan?.status).toBe('draft')
+    expect(agent.activePlan?.version).toBe(2)
+  })
+})
+
 describe('reading a task back', () => {
   it('adopts the plan the server stored', async () => {
     const { agent } = setup()

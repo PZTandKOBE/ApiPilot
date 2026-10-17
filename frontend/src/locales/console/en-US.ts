@@ -459,6 +459,13 @@ export const consoleEnUS = {
       sourceGenerated: 'Generated',
       sourceHandoff: 'From API Client',
       executionNextPhase: 'Execution runs in the next phase. The plan is approved and ready.',
+      regenerate: 'Regenerate plan',
+      regenerateTitle: 'Create a new plan version?',
+      regenerateBody:
+        'A new version will be generated for this document. The current plan and every historical run stay unchanged; the new version starts as a draft and needs its own approval.',
+      regenerateConfirm: 'Create new version',
+      regenerateCancel: 'Keep current plan',
+      regenerateSuccess: 'New plan version created.',
     },
 
     status: {
@@ -557,6 +564,10 @@ export const consoleEnUS = {
     notFound: 'Test plan not found',
     notFoundBody:
       'This plan either does not exist or belongs to a different specification than the one loaded.',
+    version: 'Version {version}',
+    current: 'Current',
+    runs: 'Runs',
+    retry: 'Retry',
   },
   runs: {
     title: 'Test Runs',
@@ -572,6 +583,7 @@ export const consoleEnUS = {
     blocked: 'A run needs an approved plan for a loaded specification.',
 
     plan: 'Plan',
+    planId: 'Plan ID',
     environment: 'Environment',
     baseUrl: 'Base URL',
     variables: 'Variables',

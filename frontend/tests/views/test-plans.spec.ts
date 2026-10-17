@@ -103,6 +103,19 @@ describe('plan list', () => {
     expect(has(html, 'Source')).toBe(true)
   })
 
+  it('shows every version and marks the newest one current', async () => {
+    const agent = await withPlan()
+    expect(agent.activePlan).not.toBeNull()
+
+    await agent.regeneratePlan()
+
+    const html = await render(TestPlansView)
+    expect(has(html, 'Version 1')).toBe(true)
+    expect(has(html, 'Version 2')).toBe(true)
+    expect(has(html, 'Current')).toBe(true)
+    expect(has(html, 'Runs')).toBe(true)
+  })
+
   it('shows each approval state as it changes', async () => {
     const agent = await withPlan()
     const planId = agent.activePlan?.id ?? ''
@@ -215,6 +228,21 @@ describe('plan list', () => {
 })
 
 describe('plan detail', () => {
+  it('opens an old version by its own id after a regeneration', async () => {
+    const agent = await withPlan()
+    const oldId = agent.activePlan?.id ?? ''
+    expect(oldId).not.toBe('')
+
+    await agent.regeneratePlan()
+    const html = await render(
+      TestPlanDetailView,
+      '/console/projects/prj_orders/plans/' + oldId,
+    )
+
+    expect(has(html, 'Version 1')).toBe(true)
+    expect(has(html, 'Current')).toBe(false)
+  })
+
   it('renders the plan its own url points at, not the active one', async () => {
     const older = planFixture('plan_older', 'Checkout smoke', '2026-01-01T00:00:00.000Z', 'approved')
     const newer = planFixture('plan_newer', 'Checkout regression', '2026-02-01T00:00:00.000Z')

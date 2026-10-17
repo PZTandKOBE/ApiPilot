@@ -1061,9 +1061,21 @@ def plan_design_issues(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> lis
                     )
 
                 if step.path is not None and step.path != endpoint.path:
-                    issues.append(
-                        f"{spot} says {step.path!r} where the document says {endpoint.path!r}"
-                    )
+                    # The model may echo the runtime form /orders/{{orderId}}
+                    # while the document spells /orders/{orderId}.  Compare the
+                    # normalised forms for validation only; the plan step keeps
+                    # its runtime braces so the executor can interpolate them.
+                    actual_path = agent_plan.canonical_plan_path(step.path)
+                    expected_path = agent_plan.canonical_plan_path(endpoint.path)
+
+                    if (
+                        actual_path is None
+                        or expected_path is None
+                        or actual_path != expected_path
+                    ):
+                        issues.append(
+                            f"{spot} says {step.path!r} where the document says {endpoint.path!r}"
+                        )
             elif step.kind == "extract":
                 if not (step.produces or "").strip():
                     issues.append(f"{spot} extracts into no variable")
@@ -1155,27 +1167,40 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
         steps: list[PlanStep] = []
         taken_steps: set[str] = set()
         subject: agent_plan.ApiEndpointFacts | None = None
+        request_steps: dict[str, str] = {}
+        subject_step_id: str | None = None
+        assert_description = next(
+            (step.description for step in scenario.steps if step.kind == "assert"), None
+        )
 
         for index, step in enumerate(scenario.steps):
             if step.kind == "request":
                 endpoint = endpoints[step.endpoint_id or ""]
                 subject = endpoint
+                # The body comes from the parsed OpenAPI operation, never from the
+                # model: the design chooses which endpoint to call, and the schema
+                # behind that endpoint decides what the call must carry.  One
+                # generator serves both planner paths, so they cannot drift.
+                request_body, body_generated = agent_plan._json_request_body(endpoint)
 
-                steps.append(
-                    PlanStep(
-                        id=_unique_key(
-                            agent_plan.request_step_key(endpoint.id, index), taken_steps, index
-                        ),
-                        index=index,
-                        kind="request",
-                        description=step.description,
-                        endpoint_id=endpoint.id,
-                        method=endpoint.method,
-                        path=agent_plan.request_step_path(endpoint),
-                        produces=None,
-                        consumes=agent_plan.request_step_consumes(endpoint, step.consumes),
-                    )
+                request_step = PlanStep(
+                    id=_unique_key(
+                        agent_plan.request_step_key(endpoint.id, index), taken_steps, index
+                    ),
+                    index=index,
+                    kind="request",
+                    description=step.description,
+                    endpoint_id=endpoint.id,
+                    method=endpoint.method,
+                    path=agent_plan.request_step_path(endpoint),
+                    produces=None,
+                    consumes=agent_plan.request_step_consumes(endpoint, step.consumes),
+                    body=request_body,
+                    body_present=body_generated,
                 )
+                steps.append(request_step)
+                request_steps[endpoint.id] = request_step.id
+                subject_step_id = request_step.id
                 continue
 
             if step.kind == "extract":
@@ -1201,6 +1226,10 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
                 )
                 continue
 
+            # A design assert marker is kept only for a scenario with no request
+            # at all.  Otherwise the grouping helper replaces every marker with
+            # one assert step per request, so the model cannot leave a shared
+            # checkpoint that reads whatever response happened last.
             steps.append(
                 PlanStep(
                     id=_unique_key(agent_plan.assert_step_key(index), taken_steps, index),
@@ -1215,12 +1244,16 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
                 )
             )
 
-        assertions: list[PlanAssertion] = []
+        groups: dict[str, list[PlanAssertion]] = {}
+        unbound: list[PlanAssertion] = []
         taken_assertions: set[str] = set()
+        built_count = 0
 
         for assertion in scenario.assertions:
             # What the assertion reads: the endpoint it named, or -- when it named
-            # none -- the last request the scenario makes.
+            # none -- the last request the scenario makes.  That is the real
+            # endpoint association the grouping is built from; the assertion key
+            # is never parsed back into an endpoint.
             reader = endpoints.get(assertion.endpoint_id or "") or subject
             owner_id = reader.id if reader is not None else "scenario"
 
@@ -1231,15 +1264,30 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
             else:
                 key = agent_plan.field_assertion_key(owner_id, assertion.target)
 
-            assertions.append(
-                PlanAssertion(
-                    id=_unique_key(key, taken_assertions, len(assertions)),
-                    kind=assertion.kind,
-                    target=assertion.target,
-                    expected=assertion.expected,
-                    description=assertion.description,
-                )
+            built = PlanAssertion(
+                id=_unique_key(key, taken_assertions, built_count),
+                kind=assertion.kind,
+                target=assertion.target,
+                expected=assertion.expected,
+                description=assertion.description,
             )
+            built_count += 1
+
+            owner_step_id = request_steps.get(owner_id) if reader is not None else None
+            if owner_step_id is None:
+                owner_step_id = subject_step_id
+            if owner_step_id is None:
+                unbound.append(built)
+            else:
+                groups.setdefault(owner_step_id, []).append(built)
+
+        if request_steps:
+            steps, assertions = agent_plan.arrange_assertion_steps(
+                steps, groups, assert_description=assert_description
+            )
+            assertions.extend(unbound)
+        else:
+            assertions = unbound
 
         scenarios.append(
             PlanScenario(

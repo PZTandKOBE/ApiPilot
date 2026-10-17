@@ -649,6 +649,13 @@ def _config_target(step: PlanStep) -> dict[str, Any]:
     if step.path is not None:
         config["path"] = step.path
 
+    if step.body_present:
+        # The body rides in the config the step already has: test_steps.config is
+        # JSONB and already carries method and path, so the request the plan
+        # describes stays executable without a second store or a new column.
+        config["body"] = step.body
+        config["bodyPresent"] = True
+
     return config
 
 
@@ -747,6 +754,7 @@ async def _create_plan_tree(
     spec_id: uuid.UUID,
     plan: PlanPayload,
     agent_task_id: uuid.UUID | None = None,
+    version: int = 1,
 ) -> _PlanMaterialization:
     """Write the plan row and its tree: the only writer of these four tables.
 
@@ -765,6 +773,7 @@ async def _create_plan_tree(
         # `goal` has no column of its own; `description` is the only prose field
         # on the table and the only place it can go.
         description=plan.goal.model_dump(),
+        version=version,
         status=plan.status,
         risk_level=plan.risk_level,
         source=plan.source,
@@ -821,11 +830,14 @@ async def _create_plan_tree(
         for assertion in scenario.assertions:
             stored_assertion = TestAssertion(
                 scenario_id=stored_scenario.id,
-                # `TestAssertion` in the frontend has no `stepId`, so every
-                # assertion a plan can express is scenario-level.  That is why
-                # `test_assertions.scenario_id` is the only anchor this row has
-                # and why it is NOT NULL.
-                step_id=None,
+                # The plan's binding, resolved to the row just written.  A plan
+                # that predates ``stepId`` leaves this null and is still anchored
+                # to its scenario, which is why ``scenario_id`` is NOT NULL.
+                step_id=(
+                    materialization.step_ids.get((scenario.id, assertion.step_id))
+                    if assertion.step_id is not None
+                    else None
+                ),
                 assertion_key=assertion.id,
                 assertion_type=assertion.kind,
                 target=assertion.target,
@@ -905,13 +917,12 @@ async def _load_plan_tree(session: AsyncSession, plan_id: uuid.UUID) -> _PlanMat
 
 
 def _checkpoint_step_key(scenario: PlanScenario) -> str | None:
-    """Port of ``checkpointOf`` from ``frontend/src/services/mock/run/script.ts``.
+    """The historical scenario-level checkpoint, for a plan that states none.
 
-    A scenario's assertions hang off the step that decides them: the first
-    ``assert``-kind step, or the scenario's last step, or nothing at all for an
-    empty scenario.  ``RunAssertion.stepId`` is nullable and the frontend
-    computes this same value when it builds a run locally, so a server that
-    always wrote NULL would disagree with the model it is replacing.
+    A plan written before assertions carried ``stepId`` hangs every assertion
+    off the first ``assert``-kind step, or the scenario's last step, or nothing at
+    all for an empty scenario.  A plan that states a binding uses that step
+    instead; this fallback keeps older payloads meaning what they meant.
     """
     for step in scenario.steps:
         if step.kind == "assert":
@@ -983,10 +994,14 @@ async def _insert_run_tree(
         checkpoint = steps_by_key.get(_checkpoint_step_key(scenario) or "")
 
         for assertion in scenario.assertions:
+            # The plan's own binding wins.  Without one, the historical
+            # scenario-level checkpoint is what the assertion hangs off.
+            bound = steps_by_key.get(assertion.step_id or "")
+            owner = bound or checkpoint
             session.add(
                 RunAssertion(
                     run_scenario_id=run_scenario.id,
-                    run_step_id=checkpoint.id if checkpoint is not None else None,
+                    run_step_id=owner.id if owner is not None else None,
                     source_assertion_id=materialization.assertion_ids.get(
                         (scenario.id, assertion.id)
                     ),

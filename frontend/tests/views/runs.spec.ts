@@ -114,11 +114,15 @@ describe('run list', () => {
   })
 
   it('lists what ran, with the state it ended in', async () => {
-    const { runId } = await withFinishedRun()
+    const { agent, runId } = await withFinishedRun()
     const html = await render(RunsView, listPath)
 
     expect(runId).not.toBe('')
     expect(has(html, 'Orders lifecycle validation')).toBe(true)
+    expect(has(html, 'Plan ID')).toBe(true)
+    // The run names the version it actually executed; a later regeneration
+    // must not rewrite this row's plan id.
+    expect(has(html, agent.activePlan?.id ?? '__missing__')).toBe(true)
     expect(has(html, 'Passed')).toBe(true)
     // Counts come from the run's own summary, not from a constant.
     expect(has(html, '4 Scenarios')).toBe(true)

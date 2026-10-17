@@ -48,6 +48,24 @@ const CURRENT_PATH = '/api/guest-sessions/current'
 let cached: string | null = null
 let inFlight: Promise<string> | null = null
 
+/**
+ * How many issuances may fail in a row before this tab stops asking.
+ *
+ * A broken deployment -- an origin missing from the backend's CORS list, a
+ * backend that is down -- makes every issuance fail.  Nothing in the failure
+ * itself stops a caller from trying again, and a page that retries on its own
+ * would then mint a session per attempt: 11,815 of them were created that way
+ * once.  Three tries covers a dropped connection; past that the honest answer is
+ * to stop and say so, so this tab does.
+ */
+const MAX_CONSECUTIVE_ISSUE_FAILURES = 3
+
+/** How long a tab that has given up waits before it will try again. */
+const ISSUE_COOLDOWN_MS = 5_000
+
+let consecutiveIssueFailures = 0
+let issuanceBlockedUntil = 0
+
 const storage = (): Storage | null => {
   try {
     return typeof window === 'undefined' ? null : window.localStorage
@@ -111,16 +129,32 @@ export class SessionError extends Error {
   }
 }
 
+const recordIssueFailure = (): void => {
+  consecutiveIssueFailures += 1
+
+  if (consecutiveIssueFailures >= MAX_CONSECUTIVE_ISSUE_FAILURES) {
+    issuanceBlockedUntil = Date.now() + ISSUE_COOLDOWN_MS
+  }
+}
+
 const issue = async (): Promise<string> => {
+  if (Date.now() < issuanceBlockedUntil) {
+    // Inside the cooldown: refuse without a request.  This is what keeps a
+    // retrying page from turning one misconfiguration into a session flood.
+    throw new SessionError('guest-session-suppressed')
+  }
+
   let response: Response
 
   try {
     response = await fetch(apiBaseUrl() + ISSUE_PATH, { method: 'POST' })
   } catch {
+    recordIssueFailure()
     throw new SessionError('guest-session-unreachable')
   }
 
   if (!response.ok) {
+    recordIssueFailure()
     throw new SessionError('guest-session-unavailable')
   }
 
@@ -129,15 +163,21 @@ const issue = async (): Promise<string> => {
   try {
     body = await response.json()
   } catch {
+    // A 201 with a body the browser will not let us read is the CORS case: the
+    // server created a session and threw it away.  It is a failure, not "no
+    // session yet", and it must not be retried forever.
+    recordIssueFailure()
     throw new SessionError('guest-session-invalid-response')
   }
 
   const token = (body as { sessionToken?: unknown } | null)?.sessionToken
 
   if (typeof token !== 'string' || token === '') {
+    recordIssueFailure()
     throw new SessionError('guest-session-invalid-response')
   }
 
+  consecutiveIssueFailures = 0
   writeToken(token)
 
   return token
@@ -202,5 +242,8 @@ export const revokeSession = async (): Promise<void> => {
 /** For tests: forget both the token and any in-flight issuance. */
 export const resetSessionForTests = (): void => {
   clearToken()
+
+  consecutiveIssueFailures = 0
+  issuanceBlockedUntil = 0
   inFlight = null
 }
