@@ -19,6 +19,87 @@ export interface MessageSchema {
    */
   readonly console: ConsoleMessageSchema
 
+  /** Learn Us documentation portal. */
+  readonly learn: {
+    readonly brand: string
+    readonly docsLabel: string
+    readonly tryUs: string
+    readonly search: string
+    readonly searchTitle: string
+    readonly searchPlaceholder: string
+    readonly searchHint: string
+    readonly searchEmpty: string
+    readonly searchNoResults: string
+    readonly close: string
+    readonly menu: string
+    readonly closeMenu: string
+    readonly theme: string
+    readonly light: string
+    readonly dark: string
+    readonly switchToLight: string
+    readonly switchToDark: string
+    readonly onThisPage: string
+    readonly previous: string
+    readonly next: string
+    readonly copy: string
+    readonly copied: string
+    readonly copyFailed: string
+    readonly linkCopied: string
+    readonly backToDocs: string
+    readonly notFound: string
+    readonly notFoundBody: string
+    readonly breadcrumbHome: string
+    readonly groups: {
+      readonly start: string
+      readonly use: string
+      readonly reference: string
+    }
+  }
+
+  /** Public account/login surface. Never contains provider credentials. */
+  readonly auth: {
+    readonly title: string
+    readonly subtitle: string
+    readonly selfHostedTitle: string
+    readonly selfHostedBody: string
+    readonly officialTitle: string
+    readonly firstTime: string
+    readonly continueWithGithub: string
+    readonly continueWithGoogle: string
+    readonly continueAsGuest: string
+    readonly or: string
+    readonly loading: string
+    readonly providerUnavailable: string
+    readonly noProviders: string
+    readonly signedInAs: string
+    readonly noEmail: string
+    readonly continueToConsole: string
+    readonly logout: string
+    readonly logoutFailed: string
+    readonly errorTitle: string
+    readonly backHome: string
+    readonly privacyNote: string
+    readonly signInRequired: string
+    readonly errors: {
+      readonly unavailable: string
+      readonly required: string
+      readonly providerUnavailable: string
+      readonly guestSessionsDisabled: string
+      readonly forbiddenOrigin: string
+      readonly logoutFailed: string
+      readonly oauthCancelled: string
+      readonly oauthFailed: string
+      readonly stateInvalid: string
+      readonly oidcInvalid: string
+      readonly providerProfileFailed: string
+      readonly accountUnavailable: string
+      readonly authDisabled: string
+      readonly guestDisabled: string
+      readonly guestStartFailed: string
+      readonly guestLimitReached: string
+    }
+  }
+
   readonly nav: {
     readonly github: string
     readonly language: string

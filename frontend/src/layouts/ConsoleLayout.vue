@@ -6,6 +6,8 @@ import ConsoleEmptyState from '@/components/console/ConsoleEmptyState.vue'
 import ConsoleSidebar from '@/components/console/ConsoleSidebar.vue'
 import ConsoleTopBar from '@/components/console/ConsoleTopBar.vue'
 import { useI18n } from '@/i18n'
+import { readToken } from '@/services/session'
+import { useAuthStore } from '@/stores/auth'
 import { useProjectStore } from '@/stores/project'
 import { useUiStore } from '@/stores/ui'
 
@@ -67,6 +69,7 @@ const router = useRouter()
 const { t } = useI18n()
 const ui = useUiStore()
 const projectStore = useProjectStore()
+const auth = useAuthStore()
 
 const mainRef = ref<HTMLElement | null>(null)
 
@@ -145,6 +148,22 @@ const replaceProjectInRoute = (projectId: string): void => {
  * list changes under a route that was already fine.
  */
 const bootstrap = async (): Promise<void> => {
+  // app bootstrap (main.ts) initializes auth before the router/views mount.
+  // Direct component tests do not, and must not issue an extra config request.
+  if (auth.initialized && auth.isOfficialCloud && !auth.isAuthenticated) {
+    // Account auth is preferred, but an explicitly started browser guest may
+    // enter the console when the server enabled guest experience. A guest
+    // without a token still goes through the login/guest chooser first.
+    const hasGuestToken = auth.guestEnabled && readToken() !== null
+    if (!hasGuestToken) {
+      await router.replace({
+        name: 'login',
+        query: { next: route.fullPath },
+      })
+      return
+    }
+  }
+
   await projectStore.initialize()
 
   if (projectStore.status !== 'ready') return

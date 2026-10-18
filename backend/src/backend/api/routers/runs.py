@@ -56,7 +56,7 @@ from backend.schemas.run import (
     RunListItem,
     RunResponse,
 )
-from backend.services import guest_access, runs
+from backend.services import guest_access, guest_limits, runs
 
 __all__ = ["DEFAULT_FROM_SEQ", "DEFAULT_RUN_LIMIT", "SSE_HEADERS", "router"]
 
@@ -196,6 +196,7 @@ RunFromSeq = Annotated[
 async def create_run(
     project_id: ProjectId,
     payload: RunCreateRequest,
+    request: Request,
     session: SessionDep,
     guest: CurrentGuestSessionDep,
 ) -> RunResponse:
@@ -223,6 +224,10 @@ async def create_run(
     )
     await guest_access.require_environment_in_project(
         session, project=project, environment_public_id=payload.environment_id
+    )
+
+    await guest_limits.enforce_run_limit(
+        session, guest=guest, settings=request.app.state.auth.settings
     )
 
     return await runs.create_run(session, project_id=project_id, payload=payload)

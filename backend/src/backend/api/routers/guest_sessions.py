@@ -24,10 +24,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Response, status
+from fastapi import APIRouter, Request, Response, status
 
 from backend.api.deps import CurrentGuestSessionDep, SessionDep
-from backend.api.errors import ERROR_RESPONSES
+from backend.api.errors import ERROR_RESPONSES, AppError
 from backend.schemas.common import ErrorResponse
 from backend.schemas.guest_session import GuestSessionResponse
 from backend.services import guest_session
@@ -53,7 +53,9 @@ GUEST_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     summary="Start a guest session",
     responses=ERROR_RESPONSES,
 )
-async def create_guest_session(session: SessionDep) -> GuestSessionResponse:
+async def create_guest_session(
+    request: Request, session: SessionDep
+) -> GuestSessionResponse:
     """Issue a guest session and return its token -- once.
 
     The request carries no body: a caller cannot choose its own id, its own
@@ -65,6 +67,14 @@ async def create_guest_session(session: SessionDep) -> GuestSessionResponse:
     `201 Created` with the token, the moment it was created and the moment it
     expires.  The digest is not in the response and has no field to travel in.
     """
+    settings = request.app.state.auth.settings
+    if not settings.guest_experience_enabled:
+        raise AppError(
+            403,
+            code="guest-sessions-disabled",
+            message_key="auth.errors.guestSessionsDisabled",
+        )
+
     guest, token = await guest_session.issue(session)
     await session.commit()
 
@@ -82,7 +92,7 @@ async def create_guest_session(session: SessionDep) -> GuestSessionResponse:
     responses=GUEST_ERROR_RESPONSES,
 )
 async def revoke_current_guest_session(
-    guest: CurrentGuestSessionDep, session: SessionDep
+    request: Request, guest: CurrentGuestSessionDep, session: SessionDep
 ) -> Response:
     """Revoke the session this request authenticated with.
 
@@ -94,6 +104,22 @@ async def revoke_current_guest_session(
 
     `204 No Content`: there is nothing to say beyond "done".
     """
+    settings = request.app.state.auth.settings
+    if not settings.guest_experience_enabled:
+        raise AppError(
+            403,
+            code="guest-sessions-disabled",
+            message_key="auth.errors.guestSessionsDisabled",
+        )
+    if settings.official_cloud and guest.user_id is not None:
+        # The account's internal ownership bridge is not a browser guest
+        # session; account users must use account logout instead.
+        raise AppError(
+            403,
+            code="guest-sessions-disabled",
+            message_key="auth.errors.guestSessionsDisabled",
+        )
+
     await guest_session.revoke(session, guest)
     await session.commit()
 

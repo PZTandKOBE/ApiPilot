@@ -6,6 +6,11 @@ which means ``from backend.db import User`` silently yields nothing useful; this
 package does not repeat that.
 """
 
+from backend.schemas.auth import (
+    AuthConfigResponse,
+    AuthProviderStatus,
+    CurrentUserResponse,
+)
 from backend.schemas.base import Schema
 from backend.schemas.common import (
     ErrorResponse,
@@ -42,6 +47,9 @@ from backend.schemas.run import (
 
 __all__ = [
     "ApprovalStatus",
+    "AuthConfigResponse",
+    "AuthProviderStatus",
+    "CurrentUserResponse",
     "AssertionKind",
     "ErrorResponse",
     "HttpMethod",

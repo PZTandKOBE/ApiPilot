@@ -6,10 +6,10 @@
  * landing page.
  */
 
-export const PROJECT_NAME = 'AI API Testing Agent'
+export const PROJECT_NAME = 'ApiPilot'
 
 /** Repository slug, used for display and to build outbound links. */
-export const GITHUB_REPO = 'ai-api-testing-agent'
+export const GITHUB_REPO = 'PZTandKOBE/ApiPilot'
 
 /**
  * TODO(owner): set the real repository URL, e.g.
@@ -20,7 +20,7 @@ export const GITHUB_REPO = 'ai-api-testing-agent'
  * the GitHub entry as a disabled control with an explanatory title instead of
  * a link that 404s.
  */
-export const GITHUB_URL = ''
+export const GITHUB_URL = 'https://github.com/PZTandKOBE/ApiPilot'
 
 export const hasGithubUrl = (): boolean => GITHUB_URL.trim().length > 0
 

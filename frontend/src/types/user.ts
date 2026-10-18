@@ -12,7 +12,7 @@ export type AuthProvider = 'github' | 'google' | 'email'
 export interface User {
   readonly id: string
   readonly name: string
-  readonly email: string
+  readonly email: string | null
   /** `null` renders as initials instead of an image. */
   readonly avatarUrl: string | null
   readonly provider: AuthProvider
@@ -36,7 +36,7 @@ export const isUser = (value: unknown): value is User => {
   return (
     typeof candidate.id === 'string' &&
     typeof candidate.name === 'string' &&
-    typeof candidate.email === 'string' &&
+    (candidate.email === null || typeof candidate.email === 'string') &&
     (candidate.avatarUrl === null || typeof candidate.avatarUrl === 'string') &&
     typeof provider === 'string' &&
     AUTH_PROVIDERS.includes(provider as AuthProvider)

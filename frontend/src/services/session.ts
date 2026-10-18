@@ -34,7 +34,7 @@
  * that API's own credentials -- never this one.
  */
 
-import { apiBaseUrl } from '@/services/http'
+import { apiBaseUrl } from '@/services/baseUrl'
 
 /** The header the backend reads. One spelling, one place. */
 export const SESSION_HEADER = 'X-Guest-Session'

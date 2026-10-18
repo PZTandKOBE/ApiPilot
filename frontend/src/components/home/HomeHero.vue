@@ -7,11 +7,6 @@ import { useI18n } from '@/i18n'
 
 const { messages } = useI18n()
 
-defineProps<{
-  /** Section the secondary CTA scrolls to. */
-  scrollTargetId: string
-}>()
-
 /**
  * The pipeline the Agent actually runs, shown as a quiet caption under the
  * value proposition so the product's mental model is stated once in text
@@ -49,7 +44,7 @@ const pipeline = computed(() => messages.value.showcase.steps)
         <span class="block">{{ messages.hero.subtitleLine2 }}</span>
       </p>
 
-      <HeroActions :scroll-target-id="scrollTargetId" />
+      <HeroActions />
 
       <!-- Pipeline caption -->
       <ul

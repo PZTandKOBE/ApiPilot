@@ -42,10 +42,12 @@ from backend.schemas.common import ErrorResponse
 
 __all__ = [
     "AppError",
+    "AUTH_REQUIRED_CODE",
     "ERROR_RESPONSES",
     "GUEST_SESSION_REQUIRED_CODE",
     "RUN_MESSAGE_KEYS",
     "UNAUTHORIZED_MESSAGE_KEY",
+    "auth_required",
     "guest_session_required",
     "SQLSTATE_CHECK_VIOLATION",
     "SQLSTATE_EXCLUSION_VIOLATION",
@@ -66,6 +68,9 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 # The keys the frontend can actually render
 # --------------------------------------------------------------------------- #
 
+AUTH_REQUIRED_CODE = "auth-required"
+"""An official-cloud request without a valid account session."""
+
 GUEST_SESSION_REQUIRED_CODE = "guest-session-required"
 """The one code a missing, malformed, unknown, expired or revoked credential gets.
 
@@ -77,6 +82,15 @@ token it guessed names a real row (identity contract, section 6.4).
 UNAUTHORIZED_MESSAGE_KEY = "console.runs.errors.unauthorized"
 """The sentence for that code.  It has to be in the frontend's dictionary too --
 until it is, a 401 renders as the key itself (see the identity contract, 6.4)."""
+
+
+def auth_required() -> "AppError":
+    """The 401 for an official-cloud route without a valid account session."""
+    return AppError(
+        401,
+        code=AUTH_REQUIRED_CODE,
+        message_key="auth.errors.required",
+    )
 
 
 def guest_session_required() -> "AppError":
@@ -103,6 +117,11 @@ RUN_MESSAGE_KEYS: frozenset[str] = frozenset(
         "console.report.notFound",
         "console.report.notReady",
         "console.report.generateFailed",
+        "auth.errors.required",
+        "auth.errors.providerUnavailable",
+        "auth.errors.guestSessionsDisabled",
+        "auth.errors.guestLimitReached",
+        "auth.errors.forbiddenOrigin",
     }
 )
 """The nine run-related keys present in ``frontend/src/locales/console/en-US.ts``.

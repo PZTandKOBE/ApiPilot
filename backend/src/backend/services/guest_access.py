@@ -80,6 +80,19 @@ def _as_uuid(value: str) -> uuid.UUID | None:
         return None
 
 
+def _project_owned_by(project: Project, guest: GuestSession) -> bool:
+    """The one ownership rule for both deployment modes.
+
+    A normal browser guest has no user_id and owns guest_session_id rows. An
+    account's server-side guest has user_id and owns user_id rows; the account
+    is resolved from the HttpOnly cookie before this check, never from a
+    client-supplied guest token.
+    """
+    if guest.user_id is not None:
+        return project.user_id == guest.user_id
+    return project.guest_session_id == guest.id
+
+
 async def require_guest_task_project(
     session: AsyncSession, *, task_id: str, guest: GuestSession
 ) -> tuple[AgentTask, Project]:
@@ -100,7 +113,7 @@ async def require_guest_task_project(
     )
     row = found.one_or_none()
 
-    if row is None or row[1].guest_session_id != guest.id:
+    if row is None or not _project_owned_by(row[1], guest):
         raise _not_found(TASK_NOT_FOUND_CODE, _NOT_FOUND_MESSAGE_KEY, taskId=task_id)
 
     return row[0], row[1]
@@ -126,7 +139,7 @@ async def require_guest_run_project(
     )
     row = found.one_or_none()
 
-    if row is None or row[1].guest_session_id != guest.id:
+    if row is None or not _project_owned_by(row[1], guest):
         raise _not_found(RUN_NOT_FOUND_CODE, _NOT_FOUND_MESSAGE_KEY, runId=run_id)
 
     return row[0], row[1]
@@ -180,15 +193,18 @@ async def find_guest_project(
     if project_public_id.strip() == "":
         return None
 
-    found = await session.execute(
-        select(Project).where(Project.public_id == project_public_id)
+    owner_filter = (
+        Project.user_id == guest.user_id
+        if guest.user_id is not None
+        else Project.guest_session_id == guest.id
     )
-    project = found.scalar_one_or_none()
-
-    if project is None or project.guest_session_id != guest.id:
-        return None
-
-    return project
+    found = await session.execute(
+        select(Project).where(
+            Project.public_id == project_public_id,
+            owner_filter,
+        )
+    )
+    return found.scalar_one_or_none()
 
 
 async def require_guest_project_access(

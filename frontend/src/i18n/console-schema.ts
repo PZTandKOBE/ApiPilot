@@ -86,6 +86,10 @@ export interface ConsoleMessageSchema {
     readonly logout: string
     readonly signIn: string
     readonly guest: string
+    readonly guestMode: string
+    readonly guestHint: string
+    readonly loginAccount: string
+    readonly leaveGuest: string
     readonly account: string
     readonly toggleSidebar: string
   }

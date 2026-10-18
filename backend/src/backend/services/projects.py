@@ -129,9 +129,14 @@ async def list_for_guest(session: AsyncSession, *, guest: GuestSession) -> list[
     project owned by another guest or by a registered user, so no response can
     leak one.
     """
+    owner_filter = (
+        Project.user_id == guest.user_id
+        if guest.user_id is not None
+        else Project.guest_session_id == guest.id
+    )
     found = await session.execute(
         select(Project)
-        .where(Project.guest_session_id == guest.id)
+        .where(owner_filter)
         .order_by(Project.created_at)
     )
 
@@ -155,8 +160,8 @@ async def create_for_guest(
         public_id=project_public_id(name),
         name=name.strip()[:_NAME_LIMIT],
         description=None,
-        guest_session_id=guest.id,
-        user_id=None,
+        guest_session_id=None if guest.user_id is not None else guest.id,
+        user_id=guest.user_id,
     )
     session.add(project)
     await session.flush()

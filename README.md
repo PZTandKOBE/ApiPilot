@@ -13,18 +13,43 @@
 
 ## 目录
 
-- [项目简介](#项目简介)
-- [当前已实现](#当前已实现)
-- [技术栈](#技术栈)
-- [快速开始](#快速开始)
-- [测试](#测试)
-- [PDF 测试报告闭环](#pdf-测试报告闭环)
-- [项目结构](#项目结构)
-- [文档入口](#文档入口)
-- [当前状态与规划](#当前状态与规划)
-- [已知限制](#已知限制)
-- [许可证](#许可证)
-- [English Summary](#english-summary)
+- [ApiPilot](#apipilot)
+  - [目录](#目录)
+  - [项目简介](#项目简介)
+  - [当前已实现](#当前已实现)
+    - [项目与 API 规格](#项目与-api-规格)
+    - [AI 测试计划](#ai-测试计划)
+    - [API 测试执行与 Run](#api-测试执行与-run)
+    - [PDF 测试报告](#pdf-测试报告)
+    - [账号、会话与游客](#账号会话与游客)
+  - [技术栈](#技术栈)
+  - [快速开始](#快速开始)
+    - [前置条件](#前置条件)
+    - [1. 准备数据库](#1-准备数据库)
+    - [2. 配置后端](#2-配置后端)
+    - [3. 安装后端依赖并迁移](#3-安装后端依赖并迁移)
+    - [4. 启动后端](#4-启动后端)
+    - [5. 启动前端](#5-启动前端)
+    - [可选：不调用真实模型](#可选不调用真实模型)
+  - [身份认证与 OAuth](#身份认证与-oauth)
+  - [测试](#测试)
+    - [后端](#后端)
+    - [前端](#前端)
+    - [浏览器 E2E（可选）](#浏览器-e2e可选)
+  - [PDF 测试报告闭环](#pdf-测试报告闭环)
+    - [数据与限制](#数据与限制)
+    - [API](#api)
+  - [Learn Us 文档中心](#learn-us-文档中心)
+  - [项目结构](#项目结构)
+  - [文档入口](#文档入口)
+  - [当前状态与规划](#当前状态与规划)
+    - [已实现](#已实现)
+    - [暂缓](#暂缓)
+    - [后续方向](#后续方向)
+  - [已知限制](#已知限制)
+  - [许可证](#许可证)
+  - [English Summary](#english-summary)
+  - [License](#license)
 
 ## 项目简介
 
@@ -44,6 +69,7 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 ### 项目与 API 规格
 
 - Guest Session 身份，以及项目创建、列表和项目概览。
+- 首页右上角 GitHub 仓库入口：https://github.com/PZTandKOBE/ApiPilot。
 - 在项目内导入/粘贴 OpenAPI 规格，展示解析摘要和接口信息。
 - 项目 API Client，通过后端安全 HTTP 代理发送请求，而不是让浏览器直接访问任意目标地址。
 - 目标地址校验、SSRF 防护、DNS/IP 检查、TLS 校验、禁止自动跟随重定向和请求/响应大小限制。
@@ -51,7 +77,7 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 
 ### AI 测试计划
 
-- OpenAPI 规格分析、任务状态读取、测试计划生成和审核流程。
+- AI Test Lab（Agent Lab）覆盖 OpenAPI 规格分析、任务状态读取、测试计划生成和审核流程。
 - 测试计划以 Scenario、Step、Assertion 组织。
 - 支持 `draft`、`in_review`、`approved`、`rejected` 等状态；未批准的计划不能进入正式 Run。
 - 支持计划批准/拒绝，以及显式重新生成计划版本。
@@ -78,6 +104,22 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 - 报告只使用已保存的 Run detail，不重新调用 AI、不重新请求被测 API，也不伪造未持久化的请求/响应正文或 headers。
 - 报告生成和读取均按项目隔离；跨项目访问返回 404。
 
+### 账号、会话与游客
+
+- GitHub OAuth 与 Google OIDC 登录；首次登录自动创建 ApiPilot 账号。
+- 账号会话使用服务端保存的随机 token 哈希和 HttpOnly Cookie；支持当前用户接口、退出登录和刷新恢复。
+- 稳定身份键为 provider + provider_subject；邮箱不是身份，不会因 provider 返回同一邮箱而自动合并账号。
+- official_cloud 默认要求账号；设置 AUTH_OFFICIAL_GUEST_ENABLED=true 后，登录页同时提供 GitHub、Google 和游客体验。
+- 官方游客使用独立 Guest Session、guest_session_id 项目归属和服务器端限额；游客项目不会自动转移给登录账号。
+- 已登录账号使用 user_id 项目归属；跨账号和跨游客访问均返回 404。
+- 游客可从顶部菜单退出游客模式；只撤销当前 Guest Session，不删除项目或历史 Run。
+
+### Learn Us 文档中心
+
+- 首页 Learn Us 进入独立的 /learn 文档中心，支持中英文切换、本地全文搜索、分组导航、本页目录、代码复制、标题锚点、前后篇导航和持久化明暗主题。
+- 文档由 frontend/src/content/docs 下的 Markdown 文件提供，registry 显式注册 slug、标题、摘要和顺序。
+- 搜索和渲染均在浏览器本地完成，不依赖外部搜索服务；Markdown 不执行原始 HTML。
+
 ## 技术栈
 
 | 层级 | 实际使用 |
@@ -86,6 +128,7 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 | 后端 | Python 3.12+、FastAPI、Pydantic、SQLAlchemy 2（异步）、Alembic、HTTPX、asyncio |
 | 数据库 | PostgreSQL；异步驱动 asyncpg |
 | PDF | ReportLab；内置 `STSong-Light` CID 字体用于中文 PDF |
+| 认证 | Authlib OAuth/OIDC、itsdangerous 签名 Cookie；账号 Session 使用 SHA-256 token 哈希 |
 | 测试 | Vitest、pytest；PDF 测试使用 PyMuPDF/PyPDF（dev 依赖） |
 | AI | DeepSeek HTTP client；模型调用为可选配置，默认测试使用 stub/确定性路径 |
 
@@ -109,7 +152,7 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 
 ### 2. 配置后端
 
-在 `backend/` 目录创建 `.env`，配置数据库连接和可选模型参数。变量名以实际配置代码为准：
+在 `backend/` 目录从 `.env.example` 复制并创建 `.env`，配置数据库连接和可选模型参数。变量名以实际配置代码为准：
 
 ~~~dotenv
 POSTGRES_HOST=127.0.0.1
@@ -164,7 +207,7 @@ npm install
 npm run dev
 ~~~
 
-Vite 默认在 `http://localhost:5173` 启动。前端默认调用 `http://127.0.0.1:8000`；如后端地址不同，在 `frontend/.env` 或 shell 中设置：
+Vite 默认在 `http://localhost:5173` 启动；使用 OAuth 登录时建议打开 `http://127.0.0.1:5173`，使前端与 `http://127.0.0.1:8000` 处于同一站点，Lax Cookie 才会发送。前端默认调用 `http://127.0.0.1:8000`；如后端地址不同，在 `frontend/.env` 或 shell 中设置：
 
 ~~~dotenv
 VITE_API_BASE_URL=http://127.0.0.1:8000
@@ -183,6 +226,117 @@ $env:AGENT_PLANNER = 'deterministic'
 
 真实 DeepSeek 路径和 live 测试默认不启用；具体开关见 [docs/PROJECT_PROGRESS.md](docs/PROJECT_PROGRESS.md)。
 
+## 身份认证与 OAuth
+
+### 两种部署模式
+
+| DEPLOYMENT_MODE | 行为 |
+|---|---|
+| self_hosted（默认） | 保留现有 Guest Session；不要求 OAuth 凭据；控制台可直接使用 |
+| official_cloud | 默认要求账号；开启 AUTH_OFFICIAL_GUEST_ENABLED 后可选择账号或游客；游客使用独立 Guest Session 和服务端限额；账号 Project/Run/Report 继续按 user_id 隔离 |
+
+official_cloud 的游客体验默认关闭。开启后，游客可创建独立 Guest Session、项目、受限的 Run 和 AI 任务；游客项目不会自动转到后续登录的账号。
+
+### 配置
+
+从 backend/.env.example 复制并填写占位符。OAuth 相关变量：
+
+| 变量 | 说明 |
+|---|---|
+| DEPLOYMENT_MODE | self_hosted 或 official_cloud |
+| AUTH_PUBLIC_BASE_URL | 后端公开地址，用于推导 callback URI |
+| AUTH_FRONTEND_BASE_URL | 登录成功/失败后跳转的前端 origin |
+| AUTH_SESSION_SECRET | 高熵随机字符串，用于签署短期 OAuth state cookie |
+| AUTH_COOKIE_SECURE | HTTPS 生产环境为 true；本地 HTTP 才显式设 false |
+| GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET | GitHub OAuth App 凭据 |
+| GITHUB_REDIRECT_URI | 可覆盖默认 callback；必须与 GitHub App 完全一致 |
+| GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET | Google OAuth Web client 凭据 |
+| GOOGLE_REDIRECT_URI | 可覆盖默认 callback；必须与 Google Console 完全一致 |
+| GOOGLE_OIDC_DISCOVERY_URL | 默认 Google OIDC discovery |
+| AUTH_SESSION_TTL_SECONDS | 账号会话有效期，默认 14 天 |
+| AUTH_STATE_TTL_SECONDS | OAuth state 有效期，默认 10 分钟 |
+| AUTH_OFFICIAL_GUEST_ENABLED | official_cloud 是否允许游客体验；默认 false |
+| AUTH_OFFICIAL_GUEST_MAX_PROJECTS | 每个官方云游客最多项目数，默认 3 |
+| AUTH_OFFICIAL_GUEST_MAX_RUNS | 每个官方云游客最多 Run 数，默认 10 |
+| AUTH_OFFICIAL_GUEST_MAX_AGENT_TASKS | 每个官方云游客最多 AI Agent 任务数，默认 1 |
+| AUTH_OFFICIAL_GUEST_DAILY_AGENT_TASKS | 所有官方云游客每日 AI Agent 任务总上限，默认 10 |
+
+本地开发建议同时使用 127.0.0.1 打开前端和后端，避免 localhost 与 127.0.0.1 造成 Lax Cookie 不发送：
+
+~~~powershell
+cd frontend
+npm run dev -- --host 127.0.0.1
+~~~
+
+然后打开 http://127.0.0.1:5173。若前端/后端不同源，CORS_ALLOW_ORIGINS 必须包含实际前端 origin。
+
+### GitHub OAuth App
+
+1. 在 GitHub Settings → Developer settings → OAuth Apps 新建 OAuth App。
+2. Homepage URL 填部署前端地址。
+3. Authorization callback URL 填：
+   http://127.0.0.1:8000/api/auth/callback/github
+4. 将 Client ID/Secret 写入后端环境变量；只申请 read:user，不请求 repo/gist。
+5. 使用 GITHUB_REDIRECT_URI 时，必须与页面中的回调地址完全一致。
+
+### Google OAuth / OIDC
+
+1. 在 Google Cloud Console 创建 OAuth Web application。
+2. Authorized redirect URI 填：
+   http://127.0.0.1:8000/api/auth/callback/google
+3. 将 Client ID/Secret 写入后端环境变量。
+4. Scope 为 openid email profile；后端使用 Authlib 验证 ID token 的签名、issuer、audience、expiry 和 nonce。
+
+认证 migration 为 d4e5f6a7b8c9（父 revision c33a1b2c3d4e）；它在 ai_api_testing 和 aiata_c4_test 均已应用。后续 schema 变更仍应显式执行 upgrade head，不要在应用启动时自动迁移。
+
+### 登录流程
+
+~~~text
+GET /api/auth/login/{provider}?next=/console
+  → provider authorization (state + PKCE；Google 另含 nonce)
+  → GET /api/auth/callback/{provider}
+  → validate one-time DB state
+  → exchange code / validate OIDC ID token
+  → identity (provider, subject) → User
+  → internal account guest identity → HttpOnly session cookie
+  → redirect to safe frontend path
+~~~
+
+- 首次登录自动创建账号；同一 provider subject 再次登录回到同一账号。
+- Email 不是主身份；不同 provider 使用同一 email 不会自动合并账号。
+- 账号会话 Cookie 为 HttpOnly、SameSite=Lax、Path=/；生产 HTTPS 使用 Secure。
+- 服务端只保存会话 token 的 SHA-256；provider access/ID token 不进入数据库、localStorage 或 URL。
+- 登录回跳只允许站内相对路径；state 事务在数据库中一次性消费。
+- API 写操作还有 Origin 校验作为 Cookie 的第二道 CSRF 防护。
+
+游客流程：
+
+~~~text
+POST /api/guest-sessions
+  → server issues an opaque Guest Session token
+  → browser stores it local-only and sends X-Guest-Session
+  → Guest Session owns projects through guest_session_id
+  → refresh reuses the same token; explicit exit revokes only that session
+~~~
+
+official_cloud 本地开启游客体验只需设置：
+
+~~~dotenv
+DEPLOYMENT_MODE=official_cloud
+AUTH_OFFICIAL_GUEST_ENABLED=true
+~~~
+
+服务端限额由 AUTH_OFFICIAL_GUEST_MAX_* 与 AUTH_OFFICIAL_GUEST_DAILY_AGENT_TASKS 控制；不要把游客体验建立在仅隐藏前端按钮上。
+
+### 已知限制
+
+- 真实 GitHub/Google OAuth 尚未使用真实凭据做端到端验收；provider 交换在测试中被 mock。
+- V1 不自动认领登录前已有的 Guest 项目；登录账号从自己的 user_id 项目开始。后续需要明确、安全的账号关联流程。
+- 注册/登录页覆盖 OAuth；邮箱密码、MFA 和账号解绑仍未实现。
+- official_cloud 游客使用数据库计数限额，不包含独立的计费/套餐系统；游客会话创建本身仍建议在反向代理层限速。
+- official_cloud 且游客关闭、未配置任何 provider 时，登录页会明确显示未配置，受保护 API 返回 401。
+- 用户可从游客菜单明确退出游客模式；退出只撤销当前 Guest Session，不删除项目和运行记录。
+
 ## 测试
 
 ### 后端
@@ -195,7 +349,7 @@ $env:POSTGRES_DB = 'aiata_c4_test'
 uv run pytest tests/ -q
 ~~~
 
-最近一次验证结果：**152 passed, 3 skipped**，退出码 **0**。
+最近一次验证结果：**171 passed, 3 skipped**，退出码 **0**。
 
 不要把这个测试库指向开发/业务数据库。运行会创建和清理测试夹具。
 
@@ -206,7 +360,7 @@ cd frontend
 npm test
 ~~~
 
-最近一次验证结果：**27 个测试文件，338 项测试通过，0 失败**，退出码 **0**。
+最近一次验证结果：**37 个测试文件，379 项测试通过，0 失败**，退出码 **0**。
 
 类型检查：
 
@@ -218,7 +372,7 @@ npx vue-tsc -b --pretty false
 当前会报告一个**既有**类型错误：
 
 ~~~text
-src/layouts/ConsoleLayout.vue(114,10): error TS18047:
+src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 'projectStore.activeProject' is possibly 'null'.
 ~~~
 
@@ -262,7 +416,20 @@ src/layouts/ConsoleLayout.vue(114,10): error TS18047:
 | GET | /api/projects/{project_id}/reports/{report_id}/file | 在线查看 PDF |
 | GET | /api/projects/{project_id}/reports/{report_id}/download | 下载 PDF |
 
-所有报告路由都要求当前 Guest Session 拥有对应项目。
+所有报告路由都要求当前已验证身份（账号或 Guest Session）拥有对应项目。
+
+## Learn Us 文档中心
+
+首页的 **Learn Us** 现在进入独立的文档中心，而不是滚动到营销区。
+
+- 入口：`/learn`；文章路径：`/learn/{slug}`。
+- 左侧按 Get started / Use ApiPilot / Reference 分组导航，右侧生成 H2/H3 本页目录。
+- 文章来自 `frontend/src/content/docs/{zh-CN,en-US}` 下的 Markdown 文件；`registry.ts` 显式注册标题、slug、分组、顺序和摘要。
+- 支持中英文切换、标题/摘要/正文的本地搜索、`Ctrl/Cmd+K`、代码一键复制、标题锚点复制、前后篇导航。
+- Light / Dark 只作用于文档根节点；用户选择保存到 localStorage，未选择时遵循系统偏好。Try Us 控制台主题不受影响。
+- Markdown 渲染不执行原始 HTML，并限制链接协议；不依赖外部搜索服务。
+
+文章覆盖：概览、快速开始、本地部署、配置、项目与 API 规格、AI Test Lab、计划与审批、运行测试、运行历史、PDF 报告、故障排查、安全与隐私、FAQ。
 
 ## 项目结构
 
@@ -285,6 +452,8 @@ src/layouts/ConsoleLayout.vue(114,10): error TS18047:
 │   └── uv.lock
 ├── frontend/
 │   ├── src/                # Vue 控制台、组件、stores、services
+│   │   ├── content/docs/   # Learn Us Markdown 内容与显式注册表
+│   │   └── components/learn/ # Learn Us 顶栏、导航、搜索
 │   ├── tests/              # Vitest 测试
 │   ├── e2e/                # 受控浏览器 E2E harness
 │   ├── docs/               # 前端架构与 REST 契约
@@ -321,6 +490,9 @@ src/layouts/ConsoleLayout.vue(114,10): error TS18047:
 - Run detail 的 Initial/Runtime variables 区分。
 - 报告中心，以及从终态 Run 生成、保存、查看、下载和打印 PDF 报告。
 - 报告脱敏与项目访问隔离。
+- GitHub / Google OAuth、账号 Session、真实账号菜单和退出登录。
+- official_cloud 游客体验、独立 Guest Session、服务端项目/Run/AI 任务限额。
+- Learn Us 文档中心：中英文 Markdown、分组导航、搜索、代码复制、锚点、前后篇和持久化明暗主题。
 
 ### 暂缓
 
@@ -337,9 +509,10 @@ src/layouts/ConsoleLayout.vue(114,10): error TS18047:
 - Run 启动恢复没有 executor lease/heartbeat；`running` Run 在进程崩溃后的识别仍有缺口。
 - `schema` 断言尚未实现，执行时会跳过。
 - Collections / Request History 仍只保存在浏览器 localStorage。
-- 注册/登录仍不属于 Guest-first 阶段；现有登录界面不是真实身份系统。
+- GitHub / Google OAuth 的真实 provider 端到端流程尚未在本次发布中手工验收；自动化测试验证了 state、PKCE、OIDC 声明校验、Cookie 和回调契约，provider 交换使用 mock。
+- official_cloud 游客限额是数据库计数上限，不是独立计费系统；游客会话创建本身仍建议由反向代理限速。
 - 报告中心暂无搜索、分页、模板或批量导出。
-- 前端类型检查仍有一个既有 `ConsoleLayout.vue(114,10)` TS18047 错误。
+- 前端类型检查仍有一个既有 `ConsoleLayout.vue(117,10)` TS18047 错误。
 - 尚未配置 Docker 或 CI 流水线。
 
 ## 许可证
@@ -354,11 +527,13 @@ MIT 是宽松许可证：你可以自由使用、修改、分发本项目，包�
 
 ## English Summary
 
-**ApiPilot** is an early-stage AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, async SQLAlchemy, PostgreSQL, and Alembic. It covers OpenAPI analysis, reviewable AI-generated test plans with versioned regeneration, deterministic run execution with multi-request flows and runtime variables, SSE run events, cancellation, and a persisted PDF report center.
+**ApiPilot** is an early-stage AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, async SQLAlchemy, PostgreSQL, Alembic, and Authlib. It covers OpenAPI analysis, reviewable AI-generated test plans with versioned regeneration, deterministic run execution with multi-request flows and runtime variables, SSE run events, cancellation, a persisted PDF report center, and an in-app Learn Us documentation center in Chinese and English.
 
 Terminal runs can generate real PDF bytes on the server, store them in the `run_reports` PostgreSQL table together with metadata, and expose project-scoped list, inline-view, and download APIs. Reports use only persisted run data; they do not re-run requests or call the AI provider.
 
-The project is **not production-ready yet**. The standalone visual workflow/canvas module has not been built. Run recovery for already-running processes, schema assertions, server-side Collections/History, and a fully automated end-to-end browser acceptance of the complete AI-to-run flow remain incomplete. See the Chinese sections above for setup, testing, report details, and limitations.
+GitHub OAuth and Google OIDC accounts use server-side sessions and HttpOnly cookies. `self_hosted` keeps the original Guest Session behavior. `official_cloud` can require accounts or, with `AUTH_OFFICIAL_GUEST_ENABLED=true`, offer a sandboxed guest experience with per-guest project/run/AI-task caps and a global daily guest AI-task cap. Guest projects are isolated by `guest_session_id` and are not transferred to later account logins.
+
+The project is **not production-ready yet**. The standalone visual workflow/canvas module has not been built. Run recovery for already-running processes, schema assertions, server-side Collections/History, and a fully automated end-to-end browser acceptance of the complete AI-to-run flow remain incomplete. Real GitHub/Google provider login has not been manually accepted end-to-end in this release; automated tests use mocked provider exchanges. See the Chinese sections above for setup, testing, report details, and limitations.
 
 ## License
 

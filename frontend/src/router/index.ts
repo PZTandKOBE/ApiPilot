@@ -38,6 +38,24 @@ const routes: RouteRecordRaw[] = [
     redirect: { name: 'console-dashboard' },
   },
   {
+    path: '/login',
+    name: 'login',
+    component: () => import('@/views/LoginView.vue'),
+    meta: { titleKey: 'auth.title' },
+  },
+  {
+    path: '/learn',
+    name: 'learn',
+    component: () => import('@/views/LearnView.vue'),
+    meta: { titleKey: 'learn.docsLabel' },
+  },
+  {
+    path: '/learn/:slug',
+    name: 'learn-doc',
+    component: () => import('@/views/LearnView.vue'),
+    meta: { titleKey: 'learn.docsLabel' },
+  },
+  {
     path: '/console',
     component: () => import('@/layouts/ConsoleLayout.vue'),
     children: [

@@ -44,6 +44,22 @@ if _ENV_FILE.is_file():
 
 os.environ["POSTGRES_DB"] = SCRATCH_DB
 
+# Auth tests must not inherit a developer's live OAuth deployment mode or
+# credentials. Individual tests opt back into official-cloud behavior with
+# monkeypatch. This also keeps the test process from calling a real provider.
+os.environ["DEPLOYMENT_MODE"] = "self_hosted"
+os.environ["AUTH_OFFICIAL_GUEST_ENABLED"] = "false"
+os.environ["AUTH_PUBLIC_BASE_URL"] = "http://127.0.0.1:8000"
+os.environ["AUTH_FRONTEND_BASE_URL"] = "http://127.0.0.1:5173"
+os.environ["AUTH_SESSION_SECRET"] = ""
+for _provider_key in (
+    "GITHUB_CLIENT_ID",
+    "GITHUB_CLIENT_SECRET",
+    "GOOGLE_CLIENT_ID",
+    "GOOGLE_CLIENT_SECRET",
+):
+    os.environ[_provider_key] = ""
+
 # --------------------------------------------------------------------------- #
 # 2. Import the application objects, then prove where they point.
 # --------------------------------------------------------------------------- #

@@ -1,16 +1,12 @@
 """Application assembly.
 
 Everything that shapes the HTTP surface is here, in one screen: middleware,
-exception handlers, routers.  A reader who wants to know what this service
+exception handlers, routers. A reader who wants to know what this service
 exposes should not have to follow imports to find out.
 
-``create_app()`` is a factory rather than a module-level ``app`` so that a test
-can build a fresh instance with different environment variables -- CORS origins
-are read from the environment at call time, not at import time.
-
-The lifespan hook is the other half of that: it is where the process does the one
-thing that has to happen before it answers anybody, which today is closing the
-runs a previous process left queued.  See ``_lifespan`` below.
+Auth is assembled here too: the deployment mode is read once per app factory,
+and the OAuth client is attached to app.state so tests can replace the provider
+exchange without touching the routes.
 """
 
 from __future__ import annotations
@@ -20,11 +16,19 @@ import logging
 import os
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.middleware.sessions import SessionMiddleware
 
-from backend.api.errors import register_exception_handlers
-from backend.api.routers import agent, guest_sessions, projects, reports, runs
+from backend.api.errors import build_error_payload, register_exception_handlers
+from backend.api.routers import agent, auth, guest_sessions, projects, reports, runs
+from backend.services.auth_config import (
+    AUTH_COOKIE_NAME,
+    OAUTH_STATE_COOKIE_NAME,
+    load_auth_settings,
+)
+from backend.services.oauth import OAuthService
 
 logger = logging.getLogger(__name__)
 
@@ -35,47 +39,24 @@ CORS_ALLOW_ORIGINS_ENV = "CORS_ALLOW_ORIGINS"
 DEFAULT_CORS_ALLOW_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 """Vite's dev server, by name and by address.
 
-An explicit list, not ``["*"]``.  The frontend has no API base URL configured
-yet and no Vite proxy, so in development it calls this service cross-origin
-directly -- which means without CORS the very first request fails and nothing
-else can be tested.  But ``*`` would also be what ships, and a wildcard on a
-service that will eventually carry credentials is a decision nobody makes on
-purpose.  Add deployments through the environment variable instead.
+An explicit list, not ["*"]. A wildcard on a service that carries credentials
+would also be what ships; deployments add their origin through the environment
+variable instead.
 """
 
 
 def allowed_origins() -> list[str]:
-    """Parse ``CORS_ALLOW_ORIGINS``, falling back to the Vite dev server.
-
-    Comma-separated, in the same ``os.getenv`` style as
-    ``backend/db/database.py``.  ``.env`` has already been read by the time this
-    runs: ``backend.db.database`` calls ``load_dotenv()`` at import.
-    """
     raw = os.getenv(CORS_ALLOW_ORIGINS_ENV, DEFAULT_CORS_ALLOW_ORIGINS)
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
 @contextlib.asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Startup and shutdown for the process, around the serving of requests.
+    """Startup and shutdown around run recovery.
 
-    The only startup work is run recovery, and it is here rather than in a router
-    because it is about the *process*: a run left ``queued`` by a process that died
-    will never be picked up by anything else, and the moment to notice is before
-    the server starts accepting work.
-
-    Two properties matter more than the work itself.
-
-    **It cannot stop the application.**  A database that is unreachable at boot, a
-    row that cannot be read, a repair that fails -- all of them are logged and the
-    server starts anyway.  Recovery is a repair, not a prerequisite, and a service
-    that refused to start because it could not tidy up would turn a small problem
-    into an outage.
-
-    **It is off when execution is off.**  ``recover_queued_runs`` returns
-    immediately when ``RUN_EXECUTOR_DISABLED`` is set, which is what the
-    verification scripts rely on: their runs are fixtures that must stay exactly as
-    they were created, and a recovery pass that ran anyway would rewrite them.
+    Recovery is a repair, not a prerequisite: a database that is unreachable at
+    boot must not turn a small cleanup problem into an outage. It is skipped by
+    the executor's existing disabled switch.
     """
     from backend.services.run_executor import recover_queued_runs
 
@@ -88,9 +69,11 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    settings = load_auth_settings()
+
     app = FastAPI(
         lifespan=_lifespan,
-        title="AI API Testing Agent API",
+        title="ApiPilot API",
         version="0.1.0",
         summary="Run test plans against a real API and report what happened.",
         description=(
@@ -99,10 +82,12 @@ def create_app() -> FastAPI:
             "property of the server, and the client only reads them. Agent tasks "
             "are the other way in: a document and a prompt in, a draft plan out, "
             "and no run until a human approves it.\n\n"
-            "Errors all share one envelope: `code`, `messageKey` and, when there "
-            "is something to interpolate, `params`."
+            "Errors all share one envelope: code, messageKey and, when there "
+            "is something to interpolate, params."
         ),
     )
+
+    app.state.auth = OAuthService(settings)
 
     app.add_middleware(
         CORSMiddleware,
@@ -111,8 +96,44 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    if settings.state_secret:
+        app.add_middleware(
+            SessionMiddleware,
+            secret_key=settings.state_secret,
+            session_cookie=OAUTH_STATE_COOKIE_NAME,
+            max_age=settings.state_ttl_seconds,
+            same_site="lax",
+            https_only=settings.session_cookie_secure,
+            path="/",
+        )
+
+    @app.middleware("http")
+    async def auth_origin_guard(request: Request, call_next):
+        """Reject a cross-site cookie-authenticated write.
+
+        The account cookie is SameSite=Lax; this is the second line for a
+        same-site-but-wrong-origin or a browser that sends an Origin header.
+        Non-browser clients without Origin are not blocked by this check.
+        """
+        current = request.app.state.auth.settings
+        if (
+            current.official_cloud
+            and request.method not in ("GET", "HEAD", "OPTIONS")
+            and request.cookies.get(AUTH_COOKIE_NAME)
+        ):
+            origin = request.headers.get("origin")
+            if origin and origin not in current.allowed_origins():
+                return JSONResponse(
+                    status_code=403,
+                    content=build_error_payload(
+                        code="forbidden-origin",
+                        message_key="auth.errors.forbiddenOrigin",
+                    ),
+                )
+        return await call_next(request)
 
     register_exception_handlers(app)
+    app.include_router(auth.router)
     app.include_router(guest_sessions.router)
     app.include_router(projects.router)
     app.include_router(runs.router)

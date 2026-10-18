@@ -68,7 +68,13 @@ from backend.db.models.result import (
     RunStep,
     TestRun,
 )
-from backend.db.models.user import GuestSession, User
+from backend.db.models.user import (
+    GuestSession,
+    OAuthTransaction,
+    User,
+    UserIdentity,
+    UserSession,
+)
 
 __all__ = [
     "AgentTask",
@@ -79,6 +85,7 @@ __all__ = [
     "EnvironmentAuth",
     "EnvironmentVariable",
     "GuestSession",
+    "OAuthTransaction",
     "Project",
     "RequestCollection",
     "RunAssertion",
@@ -94,4 +101,6 @@ __all__ = [
     "TestScenario",
     "TestStep",
     "User",
+    "UserIdentity",
+    "UserSession",
 ]

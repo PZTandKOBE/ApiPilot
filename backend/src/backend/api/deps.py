@@ -1,17 +1,13 @@
 """Request-scoped dependencies.
 
-Two dependencies, one job each: hand a route an AsyncSession (and make sure it
-is closed and rolled back on the way out), and hand it the **verified** guest
-identity behind the request.  AsyncSessionLocal is imported from
-backend.db.database, which is frozen -- the session factory already exists and
-this module must not grow a second one.
+Two identities, one ownership model:
 
-The identity dependency resolves, verifies and returns the session row; it never
-returns the header value, because a string a caller typed is not an identity
-until the server has checked it (identity contract, section 6.2).  It also never
-commits: a route's transaction belongs to the route, and the one write identity
-does need -- the daily renewal -- is made in its own unit by
-services/guest_session.renew.
+* self-hosted: the verified X-Guest-Session browser token, exactly as before;
+* official cloud: an account cookie mapped to the account's server-side
+  internal guest identity, or -- when explicitly enabled -- a verified browser
+  guest token. The account session is verified here, not trusted from
+  localStorage, and the existing project/run/report ownership checks still run
+  in the services.
 """
 
 from __future__ import annotations
@@ -19,33 +15,30 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Annotated
 
-from fastapi import Depends, Header
+from fastapi import Depends, Header, Request
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.errors import guest_session_required
+from backend.api.errors import auth_required, guest_session_required
 from backend.db.database import AsyncSessionLocal
-from backend.db.models.user import GuestSession
+from backend.db.models.user import GuestSession, User
+from backend.services import auth as auth_service
 from backend.services import guest_session
+from backend.services.auth_config import AUTH_COOKIE_NAME, AuthSettings
 
 __all__ = [
     "CurrentGuestSessionDep",
+    "CurrentUserDep",
     "GuestToken",
     "SessionDep",
     "get_current_guest_session",
+    "get_current_user",
     "get_session",
 ]
 
 
 async def get_session() -> AsyncIterator[AsyncSession]:
-    """Yield a session, rolling back on any exception.
-
-    The rollback is not belt-and-braces.  After an ``IntegrityError`` the
-    connection is in an aborted transaction and every subsequent statement fails
-    with ``25P02`` until it is rolled back -- so a handler that catches a
-    constraint violation and tries to report it would otherwise fail while
-    building the error response.  ``expire_on_commit=False`` on the factory
-    means the rollback costs nothing on the success path.
-    """
+    """Yield a session, rolling back on any exception."""
     async with AsyncSessionLocal() as session:
         try:
             yield session
@@ -61,29 +54,74 @@ GuestToken = Annotated[
     Header(
         alias="X-Guest-Session",
         description=(
-            "The token returned by POST /api/guest-sessions. The only accepted "
-            "way to carry a guest identity; a query parameter is never read as "
-            "one, and neither is a business id."
+            "The token returned by POST /api/guest-sessions. Accepted in "
+            "self-hosted mode, and in official cloud only when the deployment "
+            "explicitly enables guest experience."
         ),
     ),
 ]
 
 
+def _settings(request: Request) -> AuthSettings:
+    return request.app.state.auth.settings
+
+
+async def get_current_user(request: Request, session: SessionDep) -> User:
+    """The account session behind the HttpOnly cookie, or a 401."""
+    settings = _settings(request)
+    if not settings.official_cloud:
+        raise auth_required()
+
+    token = request.cookies.get(AUTH_COOKIE_NAME)
+    user = await auth_service.user_for_session_token(session, token)
+    if user is None:
+        raise auth_required()
+    return user
+
+
+CurrentUserDep = Annotated[User, Depends(get_current_user)]
+
+
+async def _internal_guest(session: AsyncSession, user: User) -> GuestSession:
+    found = await session.execute(
+        select(GuestSession).where(GuestSession.user_id == user.id)
+    )
+    guest = found.scalar_one_or_none()
+    if guest is None or guest.revoked_at is not None:
+        raise auth_required()
+    return guest
+
+
 async def get_current_guest_session(
-    session: SessionDep, token: GuestToken = None
+    request: Request,
+    session: SessionDep,
+    token: GuestToken = None,
 ) -> GuestSession:
-    """The verified guest behind this request, or a 401.
+    """Resolve the browser identity appropriate to this deployment.
 
-    Missing, malformed, unknown, expired and revoked credentials all fail the
-    same way -- one status, one code, one sentence -- so the answer cannot be
-    used to probe whether a token names a real session (identity contract, 6.4).
-
-    The dependency reads; it does not commit.  When a session has gone a day
-    without use, the renewal is written in its own short transaction, which is
-    what keeps read-only routes from silently never renewing anything.
+    An account cookie always wins over a guest token. In official cloud the
+    guest header is accepted only when the deployment explicitly enables guest
+    experience; its server-side row is still the same ownership bridge used by
+    self-hosted guests. Account users keep the internal user_id bridge.
     """
-    guest = await guest_session.verify(session, token)
+    settings = _settings(request)
 
+    if settings.official_cloud:
+        user = await auth_service.user_for_session_token(
+            session, request.cookies.get(AUTH_COOKIE_NAME)
+        )
+        if user is not None:
+            return await _internal_guest(session, user)
+        if not settings.official_guest_enabled:
+            raise auth_required()
+        guest = await guest_session.verify(session, token)
+        if guest is None:
+            raise guest_session_required()
+        if guest_session.is_due_for_renewal(guest):
+            await guest_session.renew(token or "")
+        return guest
+
+    guest = await guest_session.verify(session, token)
     if guest is None:
         raise guest_session_required()
 

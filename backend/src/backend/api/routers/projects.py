@@ -23,14 +23,14 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, status
+from fastapi import APIRouter, Depends, Path, Request, status
 
 from backend.api.deps import CurrentGuestSessionDep, SessionDep
 from backend.api.errors import ERROR_RESPONSES
 from backend.db.models.user import GuestSession
 from backend.schemas.project import ProjectCreateRequest, ProjectResponse
 from backend.schemas.proxy import ProxyRequest, ProxyResponse
-from backend.services import api_proxy_route, projects
+from backend.services import api_proxy_route, guest_limits, projects
 from backend.services.guest_access import require_guest_project_access
 
 __all__ = ["router"]
@@ -107,7 +107,10 @@ async def list_projects(
     responses=ERROR_RESPONSES,
 )
 async def create_project(
-    payload: ProjectCreateRequest, session: SessionDep, guest: CurrentGuestSessionDep
+    request: Request,
+    payload: ProjectCreateRequest,
+    session: SessionDep,
+    guest: CurrentGuestSessionDep,
 ) -> ProjectResponse:
     """Create a project, and the one environment a run needs to have somewhere to go.
 
@@ -120,6 +123,9 @@ async def create_project(
     environment's id, because a client that had to guess it would have no way to
     start a run.
     """
+    await guest_limits.enforce_project_limit(
+        session, guest=guest, settings=request.app.state.auth.settings
+    )
     created = await projects.create_for_guest(
         session, guest=guest, name=payload.name, base_url=payload.base_url
     )

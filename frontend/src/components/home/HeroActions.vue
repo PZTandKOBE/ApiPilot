@@ -5,30 +5,15 @@ import SpecularButton from '@/components/effects/SpecularButton.vue'
 import { APP_ENTRY_ROUTE } from '@/config/project'
 import { useI18n } from '@/i18n'
 
-const props = defineProps<{
-  /** Element id of the section the secondary CTA scrolls to. */
-  scrollTargetId: string
-}>()
-
 const router = useRouter()
 const { t } = useI18n()
 
-const prefersReducedMotion = (): boolean =>
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
 const onTryUs = (): void => {
-  // TODO: point APP_ENTRY_ROUTE at the real console once it exists.
   void router.push(APP_ENTRY_ROUTE)
 }
 
 const onLearnUs = (): void => {
-  const target = document.getElementById(props.scrollTargetId)
-  if (!target) return
-
-  target.scrollIntoView({
-    behavior: prefersReducedMotion() ? 'auto' : 'smooth',
-    block: 'start',
-  })
+  void router.push('/learn')
 }
 </script>
 

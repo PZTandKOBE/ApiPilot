@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Path, status
+from fastapi import APIRouter, Path, Request, status
 
 from backend.api.deps import CurrentGuestSessionDep, SessionDep
 from backend.api.errors import ERROR_RESPONSES
@@ -39,7 +39,7 @@ from backend.schemas.agent import (
     AgentTaskResponse,
 )
 from backend.schemas.agent_audit import AgentTaskAuditResponse
-from backend.services import agent, guest_access
+from backend.services import agent, guest_access, guest_limits
 
 __all__ = ["router"]
 
@@ -101,6 +101,7 @@ async def list_project_plans(
 async def create_agent_task(
     project_id: ProjectId,
     payload: AgentTaskCreateRequest,
+    request: Request,
     session: SessionDep,
     guest: CurrentGuestSessionDep,
 ) -> AgentTaskResponse:
@@ -130,6 +131,10 @@ async def create_agent_task(
         await guest_access.require_environment_in_project(
             session, project=project, environment_public_id=payload.environment_id
         )
+
+    await guest_limits.enforce_agent_task_limit(
+        session, guest=guest, settings=request.app.state.auth.settings
+    )
 
     return await agent.start_task(session, project_id=project_id, payload=payload)
 

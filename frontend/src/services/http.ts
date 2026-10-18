@@ -23,8 +23,6 @@
  * operation failed.
  */
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
-
 /**
  * Where the API is.
  *
@@ -32,21 +30,19 @@ const DEFAULT_BASE_URL = 'http://127.0.0.1:8000'
  * starts with one, and a base URL ending in one would ask for `//api/...` --
  * which most servers accept and some proxies mangle.
  */
-export const apiBaseUrl = (): string => {
-  const configured: unknown = import.meta.env.VITE_API_BASE_URL
-  const raw =
-    typeof configured === 'string' && configured.trim() !== ''
-      ? configured.trim()
-      : DEFAULT_BASE_URL
+import {
+  getDeploymentMode,
+  isGuestExperienceEnabled,
+} from '@/services/appConfig'
+import { apiBaseUrl } from '@/services/baseUrl'
+import {
+  SESSION_HEADER,
+  ensureSession,
+  readToken,
+  recoverSession,
+} from '@/services/session'
 
-  return raw.endsWith('/') ? raw.slice(0, -1) : raw
-}
-
-// The identity this product's own backend requires. The import is circular on
-// purpose and safe: `session.ts` calls `apiBaseUrl` and this module calls the
-// session helpers, both from inside functions, so neither evaluates the other
-// while the modules are loading.
-import { SESSION_HEADER, ensureSession, recoverSession } from '@/services/session'
+export { apiBaseUrl } from '@/services/baseUrl'
 
 export interface ApiErrorInit {
   readonly status: number
@@ -149,22 +145,25 @@ export const request = async <T>(path: string, options: RequestOptions = {}): Pr
     return await fetch(apiBaseUrl() + path, {
       method: options.method ?? 'GET',
       headers,
+      credentials: 'include',
       body: hasBody ? JSON.stringify(options.body) : undefined,
       signal: options.signal,
     })
   }
 
-  // A session that could not be obtained is thrown, not turned into a request
-  // with no header.  Sending that request would earn a 401 for a reason that has
-  // nothing to do with the resource, and the 401 path would then mint another
-  // session -- which is how a CORS misconfiguration once produced thousands.
-  const token = await ensureSession()
+  // Self-hosted mints a guest session on demand. Official cloud uses the
+  // account cookie, or an explicitly started guest token when the server has
+  // enabled guest experience. It never silently downgrades an account request
+  // to a new guest session.
+  const selfHosted = getDeploymentMode() === 'self_hosted'
+  const token = selfHosted
+    ? await ensureSession()
+    : isGuestExperienceEnabled()
+      ? readToken()
+      : null
   let response = await send(token)
 
-  if (response.status === 401) {
-    // The one legitimate recovery: the token was refused, so replace it once and
-    // retry once.  A replacement that cannot be obtained is a session failure and
-    // is reported as one, rather than silently retried.
+  if (response.status === 401 && selfHosted) {
     const replacement = await recoverSession()
     response = await send(replacement)
   }
@@ -200,15 +199,21 @@ export const requestBlob = async (
     return await fetch(apiBaseUrl() + path, {
       method: options.method ?? 'GET',
       headers,
+      credentials: 'include',
       body: hasBody ? JSON.stringify(options.body) : undefined,
       signal: options.signal,
     })
   }
 
-  const token = await ensureSession()
+  const selfHosted = getDeploymentMode() === 'self_hosted'
+  const token = selfHosted
+    ? await ensureSession()
+    : isGuestExperienceEnabled()
+      ? readToken()
+      : null
   let response = await send(token)
 
-  if (response.status === 401) {
+  if (response.status === 401 && selfHosted) {
     const replacement = await recoverSession()
     response = await send(replacement)
   }

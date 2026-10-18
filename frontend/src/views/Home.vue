@@ -12,7 +12,7 @@ import MarketingLayout from '@/layouts/MarketingLayout.vue'
  * stacking order (veil → glow → grain → content) and the section rhythm.
  */
 
-/** Id shared between the hero's secondary CTA and the showcase section. */
+/** Anchor id for the product showcase section. */
 const SHOWCASE_ID = 'product-showcase'
 </script>
 
@@ -38,7 +38,7 @@ const SHOWCASE_ID = 'product-showcase'
         <div
           class="grid items-center gap-16 pb-24 pt-10 lg:min-h-[calc(100svh-72px)] lg:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)] lg:gap-10 lg:pb-28 lg:pt-4"
         >
-          <HomeHero :scroll-target-id="SHOWCASE_ID" />
+          <HomeHero />
 
           <div :id="SHOWCASE_ID" class="w-full scroll-mt-24">
             <ProductShowcase />
