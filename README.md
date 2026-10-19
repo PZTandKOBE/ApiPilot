@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="frontend/public/brand/ApiPilot_Banner.png" alt="ApiPilot" width="500" />
+</p>
+
 # ApiPilot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -22,6 +26,7 @@
     - [API 测试执行与 Run](#api-测试执行与-run)
     - [PDF 测试报告](#pdf-测试报告)
     - [账号、会话与游客](#账号会话与游客)
+    - [Learn Us 文档中心](#learn-us-文档中心)
   - [技术栈](#技术栈)
   - [快速开始](#快速开始)
     - [前置条件](#前置条件)
@@ -32,6 +37,12 @@
     - [5. 启动前端](#5-启动前端)
     - [可选：不调用真实模型](#可选不调用真实模型)
   - [身份认证与 OAuth](#身份认证与-oauth)
+    - [两种部署模式](#两种部署模式)
+    - [配置](#配置)
+    - [GitHub OAuth App](#github-oauth-app)
+    - [Google OAuth / OIDC](#google-oauth--oidc)
+    - [登录流程](#登录流程)
+    - [已知限制](#已知限制)
   - [测试](#测试)
     - [后端](#后端)
     - [前端](#前端)
@@ -39,14 +50,14 @@
   - [PDF 测试报告闭环](#pdf-测试报告闭环)
     - [数据与限制](#数据与限制)
     - [API](#api)
-  - [Learn Us 文档中心](#learn-us-文档中心)
+  - [Learn Us 文档中心](#learn-us-文档中心-1)
   - [项目结构](#项目结构)
   - [文档入口](#文档入口)
   - [当前状态与规划](#当前状态与规划)
     - [已实现](#已实现)
     - [暂缓](#暂缓)
     - [后续方向](#后续方向)
-  - [已知限制](#已知限制)
+  - [已知限制](#已知限制-1)
   - [许可证](#许可证)
   - [English Summary](#english-summary)
   - [License](#license)

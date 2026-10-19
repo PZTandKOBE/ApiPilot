@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * Placeholder brand mark — an original SVG, not a downloaded logo.
+ * ApiPilot brand mark.
  *
- * It reads as a small dependency graph: two endpoints (solid) feeding one
- * downstream assertion (hollow), which is the product's core idea in one
- * glyph. Swap the paths here when a real logo exists; nothing else changes.
+ * The supplied logo master is a white-background lockup. The public mark is a
+ * faithful icon crop on its original light field; the light tile keeps the
+ * black/purple mark legible on the console's dark surfaces.
  */
 withDefaults(
   defineProps<{
@@ -12,53 +12,24 @@ withDefaults(
   }>(),
   { size: 28 },
 )
+
+/** Runtime URL: keeps the public asset out of Vite's SSR static-URL rewrite. */
+const markSrc = '/brand/apipilot-mark.png'
 </script>
 
 <template>
-  <svg
-    :width="size"
-    :height="size"
-    viewBox="0 0 24 24"
-    fill="none"
+  <span
+    class="inline-flex shrink-0 overflow-hidden rounded-[7px] bg-white shadow-[0_0_0_1px_rgba(196,181,253,0.16)]"
+    :style="{ width: size + 'px', height: size + 'px' }"
     aria-hidden="true"
-    focusable="false"
-    class="shrink-0"
   >
-    <defs>
-      <linearGradient :id="'brand-stroke'" x1="0" y1="0" x2="24" y2="24">
-        <stop offset="0%" stop-color="#C4B5FD" />
-        <stop offset="100%" stop-color="#7C3AED" />
-      </linearGradient>
-    </defs>
-
-    <rect
-      x="1.25"
-      y="1.25"
-      width="21.5"
-      height="21.5"
-      rx="6.5"
-      stroke="url(#brand-stroke)"
-      stroke-opacity="0.55"
-      stroke-width="1.1"
+    <img
+      :src="markSrc"
+      alt=""
+      width="512"
+      height="512"
+      class="h-full w-full object-cover"
+      draggable="false"
     />
-
-    <path
-      d="M8 7.5 L16 12 L8 16.5"
-      stroke="url(#brand-stroke)"
-      stroke-width="1.7"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
-
-    <circle cx="6.4" cy="7.5" r="1.5" fill="#A78BFA" />
-    <circle cx="6.4" cy="16.5" r="1.5" fill="#A78BFA" />
-    <circle
-      cx="17.6"
-      cy="12"
-      r="1.6"
-      fill="#0A0714"
-      stroke="#C4B5FD"
-      stroke-width="1.1"
-    />
-  </svg>
+  </span>
 </template>
