@@ -94,7 +94,7 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 - Agent 任务列表展示最近任务、任务状态和关联计划；分析结果通过五步分析审阅界面呈现。
 - 测试计划以 Scenario、Step、Assertion 组织。
 - 支持 `draft`、`in_review`、`approved`、`rejected` 等状态；未批准的计划不能进入正式 Run。
-- 支持计划批准/拒绝、编辑、显式重新生成版本，以及删除计划。
+- 支持计划批准/拒绝、计划名称/目标编辑、显式重新生成版本，以及删除计划；审批和名称/目标编辑状态当前由浏览器端维护。
 - 重新生成会创建新的计划行（如 `plan_slug_v2`），旧计划和历史 Run 保持不变；当前版本由最高 version 派生。
 - 删除计划会停用该计划的全部版本，但保留历史 Run 和已生成报告，便于追溯。
 - 计划列表和详情显示 version、当前版本标记和关联 Run 数量。
@@ -518,6 +518,7 @@ npx vue-tsc -b --pretty false
 - 完整 AI 分析 → 计划 → Run 的浏览器端到端流程仍缺少一个自动化的全链路验收；已有单元、集成、SSR 和局部浏览器 harness，但不等于整条链路已验收。
 - Run 启动恢复没有 executor lease/heartbeat；`running` Run 在进程崩溃后的识别仍有缺口。
 - `schema` 断言尚未实现，执行时会跳过。
+- 计划审批/拒绝和名称/目标编辑尚无独立 Plan Approval API；Run 创建会再次检查请求中携带的审批状态，但服务端 `plan.status` 不是独立的长期审批记录。刷新后计划内容以服务端版本为准，本地名称/目标编辑不持久化。
 - Collections / Request History 仍只保存在浏览器 localStorage。
 - GitHub / Google OAuth 的真实 provider 端到端流程尚未在本次发布中手工验收；自动化测试验证了 state、PKCE、OIDC 声明校验、Cookie 和回调契约，provider 交换使用 mock。
 - official_cloud 游客限额是数据库计数上限，不是独立计费系统；游客会话创建本身仍建议由反向代理限速。
