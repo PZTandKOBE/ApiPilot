@@ -53,3 +53,20 @@ Thumbs.db
 logs/
 *.tmp
 *.bak
+
+# --------------------------------------------------------------------------- #
+# Local-only development material (not part of the public product)
+# --------------------------------------------------------------------------- #
+# The DSH design skill is a local junction; the product does not depend on it.
+/.agents/skills/taste-skill/
+
+# Internal progress, contracts and backup snapshots kept only on this machine.
+/docs/PROJECT_PROGRESS.md
+/docs/agent-pipeline-contract.md
+/docs/identity-access-contract.md
+/docs/backups/
+/backend/dosc/agent-pipeline-contract.md
+/backend/dosc/ai-api-testing-agent-database-schema-v1.md
+/backend/test_main.http
+/frontend/docs/phase-6-architecture.md
+/frontend/docs/phase-6.2-backend-rest-contract.md

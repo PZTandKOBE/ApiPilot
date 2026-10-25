@@ -1,39 +1,33 @@
 # Vue Bits Effects
 
-这是为 `D:\Aiapi_test\frontend` 准备的 Vue Bits 效果组件文件包。
+ApiPilot 前端的 Vue Bits 视觉效果组件，位于 `frontend/src/components/effects/`。
 
 ## 文件
 
-```text
+~~~text
 src/components/effects/
 ├── CardSwap.vue
 ├── DarkVeil.vue
 ├── SpecularButton.vue
 └── StrokeText.vue
-```
+~~~
 
 ## 依赖
 
-```bash
+~~~bash
 npm install gsap ogl
-```
+~~~
 
-## 放置方式
+依赖由前端 `package.json` 管理；安装项目依赖后即可使用。
 
-将 `src/components/effects/` 目录复制到：
+## 使用
 
-```text
-D:\Aiapi_test\frontend\src\components\effects
-```
-
-然后即可：
-
-```ts
+~~~ts
 import StrokeText from '@/components/effects/StrokeText.vue'
 import DarkVeil from '@/components/effects/DarkVeil.vue'
 import CardSwap from '@/components/effects/CardSwap.vue'
 import SpecularButton from '@/components/effects/SpecularButton.vue'
-```
+~~~
 
 ## 注意
 
@@ -41,8 +35,8 @@ import SpecularButton from '@/components/effects/SpecularButton.vue'
 
 `CardSwap.vue` 同时导出了官方源码中的 `Card` helper：
 
-```ts
+~~~ts
 import CardSwap, { Card } from '@/components/effects/CardSwap.vue'
-```
+~~~
 
-当前文件包只负责提供 Vue Bits effects，不包含首页业务组件。
+当前目录只提供 Vue Bits effects，不包含首页业务组件。

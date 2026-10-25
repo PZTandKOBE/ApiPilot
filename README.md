@@ -5,7 +5,7 @@
 # ApiPilot
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#当前状态与规划)
+[![Status: First Release](https://img.shields.io/badge/status-first%20release-blue.svg)](#当前状态与规划)
 [![Vue 3](https://img.shields.io/badge/Vue-3-42b883.svg)](https://vuejs.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.141-009688.svg)](https://fastapi.tiangolo.com/)
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776ab.svg)](https://www.python.org/)
@@ -13,7 +13,7 @@
 
 **ApiPilot 是一个 AI 辅助的 API 自动化测试平台。** 它围绕 OpenAPI 规格分析、测试计划生成与审批、API 测试执行、运行结果查看，以及可持久化的 PDF 测试报告展开。
 
-> **项目状态：Early Development / Alpha。** 当前已交付 AI 测试计划、Run 执行、运行时变量、SSE 事件流和 PDF 测试报告等能力，但项目仍在持续开发，**不是成熟的生产级产品**。默认测试不依赖真实模型。独立的可视化工作流模块尚未开发。
+> **项目状态：首个可运行版本（First Release）。** 当前已经具备从项目与 OpenAPI 规格、Agent 分析、测试计划生成与人工审核、后端确定性执行，到 Run 结果、PDF 报告和项目内通知的完整核心工作流。本文档只描述当前已经实现并经过测试的能力；项目仍在持续完善，**不宣称已经达到生产级可靠性**，具体边界见[已知限制](#已知限制-1)。
 
 ## 目录
 
@@ -25,6 +25,7 @@
     - [AI 测试计划](#ai-测试计划)
     - [API 测试执行与 Run](#api-测试执行与-run)
     - [PDF 测试报告](#pdf-测试报告)
+    - [项目生命周期与通知](#项目生命周期与通知)
     - [账号、会话与游客](#账号会话与游客)
     - [Learn Us 文档中心](#learn-us-文档中心)
   - [技术栈](#技术栈)
@@ -66,7 +67,7 @@
 
 ApiPilot 把 API 测试的主要步骤放进一个工作台：
 
-1. 创建项目，导入或粘贴 OpenAPI 规格，查看接口、参数、认证声明和依赖关系。
+1. 创建或编辑项目，配置环境，导入或粘贴 OpenAPI 规格，查看接口、参数、认证声明和依赖关系。
 2. 使用 AI 分析规格，生成可审核的测试计划。
 3. 审批或拒绝计划；对已有计划显式重新生成新版本。
 4. 由后端确定性执行器发送请求、提取运行时变量并运行断言。
@@ -79,9 +80,10 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 
 ### 项目与 API 规格
 
-- Guest Session 身份，以及项目创建、列表和项目概览。
+- Guest Session 身份，以及项目创建、列表、概览、编辑和删除。
+- 项目内环境创建、编辑、切换和多环境变量管理。
 - 首页右上角 GitHub 仓库入口：https://github.com/PZTandKOBE/ApiPilot。
-- 在项目内导入/粘贴 OpenAPI 规格，展示解析摘要和接口信息。
+- 在项目内导入/粘贴 OpenAPI 规格，展示解析摘要、真实接口数据和认证信息。
 - 项目 API Client，通过后端安全 HTTP 代理发送请求，而不是让浏览器直接访问任意目标地址。
 - 目标地址校验、SSRF 防护、DNS/IP 检查、TLS 校验、禁止自动跟随重定向和请求/响应大小限制。
 - Collections 与 Request History 的基础前端能力；**当前保存在浏览器 localStorage，不是服务端持久化**。
@@ -89,10 +91,12 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 ### AI 测试计划
 
 - AI Test Lab（Agent Lab）覆盖 OpenAPI 规格分析、任务状态读取、测试计划生成和审核流程。
+- Agent 任务列表展示最近任务、任务状态和关联计划；分析结果通过五步分析审阅界面呈现。
 - 测试计划以 Scenario、Step、Assertion 组织。
 - 支持 `draft`、`in_review`、`approved`、`rejected` 等状态；未批准的计划不能进入正式 Run。
-- 支持计划批准/拒绝，以及显式重新生成计划版本。
+- 支持计划批准/拒绝、编辑、显式重新生成版本，以及删除计划。
 - 重新生成会创建新的计划行（如 `plan_slug_v2`），旧计划和历史 Run 保持不变；当前版本由最高 version 派生。
+- 删除计划会停用该计划的全部版本，但保留历史 Run 和已生成报告，便于追溯。
 - 计划列表和详情显示 version、当前版本标记和关联 Run 数量。
 - OpenAPI security facts 会区分“未声明 security”“显式 public”和“需要认证”，用于确定性 Planner 决定是否生成认证场景。
 - Run 详情区分 **Initial variables** 与 **Runtime variables**；运行时变量由成功的 Extract 步骤派生，只显示名称/作用域，不暴露值。
@@ -114,6 +118,13 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 - 支持在线查看、下载和再次打印。
 - 报告只使用已保存的 Run detail，不重新调用 AI、不重新请求被测 API，也不伪造未持久化的请求/响应正文或 headers。
 - 报告生成和读取均按项目隔离；跨项目访问返回 404。
+
+### 项目生命周期与通知
+
+- 项目编辑支持名称和基础信息调整；项目删除会清理该项目的环境、规格、计划、Run、事件和报告等项目所属数据。
+- 测试计划删除采用保留历史的生命周期：计划版本退出可用列表，已结束 Run 和已生成 PDF 报告仍可按原项目读取。
+- 顶部通知中心汇总当前项目最近完成的 Agent 任务、待审核计划和已生成报告；通知从现有项目数据派生，未读状态保存在浏览器本地。
+- 删除操作前端均有明确确认与错误反馈；跨项目或已删除项目的访问返回 404，不暴露其他项目数据。
 
 ### 账号、会话与游客
 
@@ -235,7 +246,7 @@ $env:AGENT_ANALYZER = 'deterministic'
 $env:AGENT_PLANNER = 'deterministic'
 ~~~
 
-真实 DeepSeek 路径和 live 测试默认不启用；具体开关见 [docs/PROJECT_PROGRESS.md](docs/PROJECT_PROGRESS.md)。
+真实 DeepSeek 路径和 live 测试默认不启用；分析器和 Planner 的选择由 `AGENT_ANALYZER`、`AGENT_PLANNER` 环境变量控制。
 
 ## 身份认证与 OAuth
 
@@ -357,12 +368,12 @@ AUTH_OFFICIAL_GUEST_ENABLED=true
 ~~~powershell
 cd backend
 $env:POSTGRES_DB = 'aiata_c4_test'
-uv run pytest tests/ -q
+uv run python -m pytest tests/ -q
 ~~~
 
-最近一次验证结果：**171 passed, 3 skipped**，退出码 **0**。
+测试结果以本次命令的实际输出为准，不在 README 中维护容易失效的精确数量。后端测试包含 API、权限隔离、Agent 管线、Run 执行/恢复和 PDF 报告等集成测试。
 
-不要把这个测试库指向开发/业务数据库。运行会创建和清理测试夹具。
+不要把这个测试库指向开发/业务数据库。`conftest.py` 会强制使用隔离库，运行会创建和清理测试夹具。
 
 ### 前端
 
@@ -371,7 +382,7 @@ cd frontend
 npm test
 ~~~
 
-最近一次验证结果：**37 个测试文件，379 项测试通过，0 失败**，退出码 **0**。
+前端测试包含组件/页面交互、Store、服务传输和 SSR 渲染。测试结果以本次命令的实际输出为准。
 
 类型检查：
 
@@ -380,14 +391,7 @@ cd frontend
 npx vue-tsc -b --pretty false
 ~~~
 
-当前会报告一个**既有**类型错误：
-
-~~~text
-src/layouts/ConsoleLayout.vue(117,10): error TS18047:
-'projectStore.activeProject' is possibly 'null'.
-~~~
-
-该问题尚未修复，因此 `npm run verify` 目前会在类型检查阶段失败；这不代表测试断言失败。
+类型检查应与测试一起作为发布前检查运行。`npm run build` 会先执行 `vue-tsc`，再执行 Vite 生产构建。
 
 ### 浏览器 E2E（可选）
 
@@ -456,7 +460,6 @@ src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 │   ├── alembic/versions/   # 数据库迁移
 │   ├── tests/              # pytest 测试与隔离测试库 fixture
 │   ├── scripts/            # 本地验证脚本与开发工具（谨慎运行）
-│   ├── dosc/               # 早期数据库/管线契约资料
 │   ├── main.py             # uvicorn 入口
 │   ├── alembic.ini
 │   ├── pyproject.toml
@@ -467,15 +470,11 @@ src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 │   │   └── components/learn/ # Learn Us 顶栏、导航、搜索
 │   ├── tests/              # Vitest 测试
 │   ├── e2e/                # 受控浏览器 E2E harness
-│   ├── docs/               # 前端架构与 REST 契约
 │   ├── public/
+│   ├── README.md           # 前端开发与测试说明
 │   ├── package.json
 │   ├── package-lock.json
 │   └── vite.config.ts
-├── docs/                   # 项目进度与正式契约
-│   ├── PROJECT_PROGRESS.md
-│   ├── agent-pipeline-contract.md
-│   └── identity-access-contract.md
 ├── devtools/
 │   └── mock_orders_api.py  # 本地 Orders 模拟服务
 ├── LICENSE
@@ -484,19 +483,18 @@ src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 
 ## 文档入口
 
-- [项目进度与验证记录](docs/PROJECT_PROGRESS.md)
-- [Agent 管线契约](docs/agent-pipeline-contract.md)
-- [身份与访问契约](docs/identity-access-contract.md)
-- [前端架构](frontend/docs/phase-6-architecture.md)
-- [前端后端 REST 契约](frontend/docs/phase-6.2-backend-rest-contract.md)
+- [前端开发与测试说明](frontend/README.md)
 - [浏览器 E2E harness](frontend/e2e/README.md)
+- [前端 Learn Us 产品文档内容](frontend/src/content/docs/zh-CN)
 
 ## 当前状态与规划
 
 ### 已实现
 
+- 项目列表、创建、编辑、概览、删除，以及多环境创建、编辑和切换。
 - 项目、OpenAPI 规格分析与安全 API 代理。
-- AI 测试计划生成、审批、拒绝和显式版本化重新生成。
+- Agent 任务列表、任务状态、五步分析审阅和人工审核流程。
+- AI 测试计划生成、审批、拒绝、编辑和显式版本化重新生成；计划删除保留历史 Run 与报告。
 - Run 执行、多请求流程、运行时变量提取、常用断言、SSE 事件、取消和历史查看。
 - Run detail 的 Initial/Runtime variables 区分。
 - 报告中心，以及从终态 Run 生成、保存、查看、下载和打印 PDF 报告。
@@ -504,6 +502,7 @@ src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 - GitHub / Google OAuth、账号 Session、真实账号菜单和退出登录。
 - official_cloud 游客体验、独立 Guest Session、服务端项目/Run/AI 任务限额。
 - Learn Us 文档中心：中英文 Markdown、分组导航、搜索、代码复制、锚点、前后篇和持久化明暗主题。
+- 顶部应用内通知中心，汇总 Agent 任务、待审核计划和已生成报告。
 
 ### 暂缓
 
@@ -515,7 +514,7 @@ src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 
 ## 已知限制
 
-- 项目仍在 Alpha 阶段，不应直接用于关键生产测试。
+- 项目处于首个可运行版本阶段，尚未完成生产级可靠性验证，不应直接用于关键生产测试。
 - 完整 AI 分析 → 计划 → Run 的浏览器端到端流程仍缺少一个自动化的全链路验收；已有单元、集成、SSR 和局部浏览器 harness，但不等于整条链路已验收。
 - Run 启动恢复没有 executor lease/heartbeat；`running` Run 在进程崩溃后的识别仍有缺口。
 - `schema` 断言尚未实现，执行时会跳过。
@@ -523,29 +522,28 @@ src/layouts/ConsoleLayout.vue(117,10): error TS18047:
 - GitHub / Google OAuth 的真实 provider 端到端流程尚未在本次发布中手工验收；自动化测试验证了 state、PKCE、OIDC 声明校验、Cookie 和回调契约，provider 交换使用 mock。
 - official_cloud 游客限额是数据库计数上限，不是独立计费系统；游客会话创建本身仍建议由反向代理限速。
 - 报告中心暂无搜索、分页、模板或批量导出。
-- 前端类型检查仍有一个既有 `ConsoleLayout.vue(117,10)` TS18047 错误。
 - 尚未配置 Docker 或 CI 流水线。
 
 ## 许可证
 
-本项目以 **MIT License** 开源发布，版权归 **PZTandKOBE** 所有。
+本项目以 **MIT License** 开源发布，版权归 **S1eepEarly** 所有。
 
 ~~~text
-Copyright (c) 2026 PZTandKOBE
+Copyright (c) 2026 S1eepEarly
 ~~~
 
 MIT 是宽松许可证：你可以自由使用、修改、分发本项目，包括用于商业用途，条件是保留版权声明与许可证全文。完整条款见仓库根目录的 [LICENSE](LICENSE)。
 
 ## English Summary
 
-**ApiPilot** is an early-stage AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, async SQLAlchemy, PostgreSQL, Alembic, and Authlib. It covers OpenAPI analysis, reviewable AI-generated test plans with versioned regeneration, deterministic run execution with multi-request flows and runtime variables, SSE run events, cancellation, a persisted PDF report center, and an in-app Learn Us documentation center in Chinese and English.
+**ApiPilot** is a first-release AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, async SQLAlchemy, PostgreSQL, Alembic, and Authlib. It covers project and environment management, OpenAPI analysis, reviewable AI-generated test plans with versioned regeneration, deterministic run execution with multi-request flows and runtime variables, SSE run events, cancellation, a persisted PDF report center, in-app notifications, and a Learn Us documentation center in Chinese and English.
 
 Terminal runs can generate real PDF bytes on the server, store them in the `run_reports` PostgreSQL table together with metadata, and expose project-scoped list, inline-view, and download APIs. Reports use only persisted run data; they do not re-run requests or call the AI provider.
 
 GitHub OAuth and Google OIDC accounts use server-side sessions and HttpOnly cookies. `self_hosted` keeps the original Guest Session behavior. `official_cloud` can require accounts or, with `AUTH_OFFICIAL_GUEST_ENABLED=true`, offer a sandboxed guest experience with per-guest project/run/AI-task caps and a global daily guest AI-task cap. Guest projects are isolated by `guest_session_id` and are not transferred to later account logins.
 
-The project is **not production-ready yet**. The standalone visual workflow/canvas module has not been built. Run recovery for already-running processes, schema assertions, server-side Collections/History, and a fully automated end-to-end browser acceptance of the complete AI-to-run flow remain incomplete. Real GitHub/Google provider login has not been manually accepted end-to-end in this release; automated tests use mocked provider exchanges. See the Chinese sections above for setup, testing, report details, and limitations.
+This is the first release of the complete core workflow, but it is **not presented as a production-hardened platform**. The standalone visual workflow/canvas module has not been built. Run recovery for already-running processes, schema assertions, server-side Collections/History, and a fully automated end-to-end browser acceptance of the complete AI-to-run flow remain incomplete. Real GitHub/Google provider login has not been manually accepted end-to-end in this release; automated tests use mocked provider exchanges. See the Chinese sections above for setup, testing, report details, and limitations.
 
 ## License
 
-Released under the **MIT License**. Copyright (c) 2026 PZTandKOBE. See [LICENSE](LICENSE) for the full text.
+Released under the **MIT License**. Copyright (c) 2026 S1eepEarly. See [LICENSE](LICENSE) for the full text.
