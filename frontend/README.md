@@ -7,6 +7,7 @@ ApiPilot 控制台的 Vue 3 + TypeScript + Vite 前端。
 ## 技术栈
 
 - Vue 3、TypeScript、Vue Router、Pinia
+- Node.js 20.19+ 或 22.12+
 - Vite 8
 - Element Plus、Tailwind CSS
 - Vitest、Vue SSR renderToString

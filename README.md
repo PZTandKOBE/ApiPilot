@@ -162,7 +162,7 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 
 - Python **3.12+**
 - [uv](https://docs.astral.sh/uv/)
-- Node.js 与 npm（前端使用 Vite 8）
+- Node.js **20.19+** 或 **22.12+**、npm（前端使用 Vite 8）
 - PostgreSQL，以及一个可创建/迁移的本地数据库
 - 可选：DeepSeek API Key（只有需要真实模型分析/生成时才需要）
 
