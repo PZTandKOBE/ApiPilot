@@ -46,6 +46,7 @@ __all__ = [
     "AgentTaskFailure",
     "AgentTaskResponse",
     "AgentTaskStatus",
+    "AgentTaskSummaryResponse",
     "AgentUnderstandingResponse",
     "AgentVerdict",
 ]
@@ -315,6 +316,23 @@ class AgentTaskFailure(Schema):
     code: str
     message: LocalizedText
     detail: str | None = None
+
+
+class AgentTaskSummaryResponse(Schema):
+    """One recent task, without the plan tree or the understanding.
+
+    The project's task history is a dashboard surface: it needs the prompt the
+    user asked for, the real persisted status and timestamps.  It deliberately
+    does not join a plan or an audit row, so listing tasks stays one query and
+    cannot expose a plan the caller has not opened.
+    """
+
+    id: str = Field(description="agent_tasks.id. The one row UUID that is an external id.")
+    project_id: str
+    prompt: str = Field(description="The prompt frozen when the task was created.")
+    status: AgentTaskStatus
+    created_at: datetime
+    updated_at: datetime
 
 
 class AgentTaskResponse(Schema):

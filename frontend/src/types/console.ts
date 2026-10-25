@@ -7,6 +7,8 @@
 
 import type { Component } from 'vue'
 
+import type { LocalizedText } from '@/types/agent'
+
 /**
  * One entry in a console navigation list.
  *
@@ -23,15 +25,6 @@ export interface ConsoleNavItem {
   readonly params?: Readonly<Record<string, string>>
   /** Optional trailing chip, already formatted (a count, a status word). */
   readonly badge?: string
-  /**
-   * Optional i18n key for a short second line under the label.
-   *
-   * Used where two entries sit in the same group doing similar-looking things
-   * and the difference has to be legible without clicking: "API Client" and
-   * "AI Test Lab" are both "test the API", one by hand and one through the
-   * agent. Hidden in the collapsed rail, exactly like the label.
-   */
-  readonly hintKey?: string
   /** Optional i18n key for a group heading this item introduces. */
   readonly groupKey?: string
 }
@@ -64,11 +57,17 @@ export type NotificationKind = 'info' | 'success' | 'warning' | 'error'
  */
 export interface ConsoleNotification {
   readonly id: string
+  /** The project the resource belongs to; navigation is guarded by this. */
+  readonly projectId: string
   readonly kind: NotificationKind
   readonly titleKey: string
-  readonly params?: Readonly<Record<string, string | number>>
+  /** Optional second line, rendered through the same i18n mechanism. */
+  readonly detailKey?: string
+  readonly detailParams?: Readonly<Record<string, string | number>>
+  /** A dictionary-authored resource name that must follow the language switch. */
+  readonly localizedName?: LocalizedText
   /** Optional in-console destination the notification links to. */
   readonly to?: string
-  readonly createdAt: number
-  readonly read: boolean
+  createdAt: number
+  read: boolean
 }

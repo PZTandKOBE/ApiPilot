@@ -390,6 +390,30 @@ export const useRunsStore = defineStore('runs', () => {
     await loadRun(runId, options)
   }
 
+  /** Drop one project's in-memory runs after the project is deleted. */
+  const forgetProject = (projectId: string): void => {
+    const removed = runs.value
+      .filter((run) => run.projectId === projectId)
+      .map((run) => run.id)
+
+    if (removed.length === 0) return
+
+    runs.value = runs.value.filter((run) => run.projectId !== projectId)
+    details.value = details.value.filter(
+      (detail) => detail.run.projectId !== projectId,
+    )
+
+    for (const id of removed) {
+      controllers.get(id)?.abort()
+      controllers.delete(id)
+      lastSeq.delete(id)
+    }
+
+    if (activeRunId.value !== null && removed.includes(activeRunId.value)) {
+      activeRunId.value = null
+    }
+  }
+
   const cancelRun = async (runId: string): Promise<boolean> => {
     if (cancelling.value) return false
 
@@ -449,6 +473,7 @@ export const useRunsStore = defineStore('runs', () => {
     createRun,
     loadRuns,
     loadRun,
+    forgetProject,
     openRun,
     subscribeRun,
     unsubscribe,

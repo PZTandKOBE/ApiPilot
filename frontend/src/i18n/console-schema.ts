@@ -17,15 +17,7 @@ export interface ConsoleMessageSchema {
     readonly projects: string
     readonly overview: string
     readonly apiClient: string
-    /**
-     * Second line under the label, for the two entries in 测试方式 / Testing
-     * that would otherwise read as the same destination: one drives a request
-     * by hand, the other has the agent read a specification. Neither is a
-     * precondition of the other.
-     */
-    readonly apiClientHint: string
     readonly aiTestLab: string
-    readonly aiTestLabHint: string
     readonly testPlans: string
     readonly workflows: string
     readonly testRuns: string
@@ -63,11 +55,22 @@ export interface ConsoleMessageSchema {
     readonly baseUrlHint: string
     readonly createConfirm: string
     readonly createFailed: string
+    readonly delete: string
+    readonly deleteTitle: string
+    readonly deleteBody: string
+    readonly deleteConsequences: string
+    readonly deleteNameLabel: string
+    readonly deleteNamePlaceholder: string
+    readonly deleteNameMismatch: string
+    readonly deleteConfirm: string
+    readonly deleteFailed: string
+    readonly deleted: string
   }
 
   readonly environment: {
     readonly label: string
     readonly development: string
+    readonly testing: string
     readonly staging: string
     readonly production: string
     readonly baseUrl: string
@@ -80,6 +83,15 @@ export interface ConsoleMessageSchema {
     readonly notifications: string
     readonly notificationsEmpty: string
     readonly markAllRead: string
+    readonly notification: {
+      readonly agentTitle: string
+      readonly agentBody: string
+      readonly planTitle: string
+      readonly planBody: string
+      readonly reportTitle: string
+      readonly reportBody: string
+      readonly loadFailed: string
+    }
     readonly clear: string
     readonly profile: string
     readonly settings: string
@@ -108,14 +120,32 @@ export interface ConsoleMessageSchema {
     readonly title: string
     readonly subtitle: string
     readonly agentTitle: string
-    readonly agentBody: string
+    readonly agentEmpty: string
+    readonly agentEmptyBody: string
+    readonly tasksLoadFailed: string
+    readonly tasksLoadFailedBody: string
+    readonly taskStatus: {
+      readonly pending: string
+      readonly analyzing: string
+      readonly completed: string
+      readonly failed: string
+    }
     readonly projectsTitle: string
     readonly openProject: string
+    readonly openPlans: string
     readonly plansTitle: string
     readonly plansEmpty: string
+    readonly plansEmptyBody: string
+    readonly plansLoadFailed: string
+    readonly plansLoadFailedBody: string
     readonly runsTitle: string
     readonly runsEmpty: string
+    readonly runsEmptyBody: string
+    readonly runsLoadFailed: string
+    readonly runsLoadFailedBody: string
     readonly viewAll: string
+    readonly projectErrorTitle: string
+    readonly projectErrorBody: string
   }
 
   readonly overview: {
@@ -123,13 +153,37 @@ export interface ConsoleMessageSchema {
     readonly about: string
     readonly noDescription: string
     readonly environments: string
+    readonly environmentName: string
+    readonly environmentNamePlaceholder: string
+    readonly environmentNameConflict: string
+    readonly addEnvironment: string
+    readonly environmentCreated: string
+    readonly environmentCreateFailed: string
+    readonly environmentKindHint: string
+    readonly environmentVariablesHint: string
+    readonly editProject: string
+    readonly editEnvironment: string
+    readonly actions: string
+    readonly edit: string
+    readonly invalidName: string
+    readonly invalidBaseUrl: string
+    readonly baseUrlHint: string
+    readonly saveFailed: string
+    readonly projectSaved: string
+    readonly environmentSaved: string
     readonly spec: string
     readonly noSpec: string
+    readonly specLoadFailed: string
+    readonly specLoadFailedBody: string
+    readonly specFormat: string
+    readonly specEndpoints: string
+    readonly specUpdated: string
+    readonly specOpenapi3: string
+    readonly specSwagger2: string
+    readonly specUnknown: string
     readonly updated: string
     readonly quickStart: string
     readonly quickStartBody: string
-    readonly openApiClient: string
-    readonly openTestLab: string
   }
 
   readonly apiClient: {
@@ -407,6 +461,24 @@ export interface ConsoleMessageSchema {
       readonly requiresAuth: string
     }
 
+    /** Secondary review navigation inside the analysis result area. */
+    readonly review: {
+      readonly title: string
+      readonly subtitle: string
+      readonly navLabel: string
+      readonly previous: string
+      readonly next: string
+      readonly continueToPlan: string
+      readonly noSpec: string
+      readonly steps: {
+        readonly spec: string
+        readonly understanding: string
+        readonly dependencies: string
+        readonly risks: string
+        readonly actions: string
+      }
+    }
+
     readonly dependencies: {
       readonly rationaleToken: string
       readonly rationaleIdentity: string
@@ -418,6 +490,8 @@ export interface ConsoleMessageSchema {
 
     readonly risks: {
       readonly empty: string
+      readonly relatedEndpoints: string
+      readonly fields: string
       readonly authTitle: string
       readonly authDetail: string
       readonly authorizationTitle: string
@@ -499,6 +573,14 @@ export interface ConsoleMessageSchema {
       readonly regenerateConfirm: string
       readonly regenerateCancel: string
       readonly regenerateSuccess: string
+      readonly nextStep: string
+      readonly generateTitle: string
+      readonly generateBody: string
+      readonly readyTitle: string
+      readonly readyBody: string
+      readonly existsHint: string
+      readonly viewPlan: string
+      readonly openPlans: string
     }
 
     readonly status: {
@@ -604,6 +686,13 @@ export interface ConsoleMessageSchema {
     readonly current: string
     readonly runs: string
     readonly retry: string
+    readonly delete: string
+    readonly deleteTitle: string
+    readonly deleteBody: string
+    readonly deleteHistoryNote: string
+    readonly deleteConfirm: string
+    readonly deleteFailed: string
+    readonly deleted: string
   }
 
   /**
@@ -777,6 +866,7 @@ export interface ConsoleMessageSchema {
     readonly noReportsHint: string
     readonly openReport: string
     readonly download: string
+    readonly actions: string
     readonly saved: string
     readonly savedHint: string
     readonly openSaved: string
@@ -792,6 +882,9 @@ export interface ConsoleMessageSchema {
 
   readonly common: {
     readonly loading: string
+    readonly retry: string
+    /** Wording for a timestamp less than a minute old. */
+    readonly justNow: string
     readonly cancel: string
     readonly confirm: string
     readonly close: string
@@ -803,5 +896,6 @@ export interface ConsoleMessageSchema {
     readonly delete: string
     readonly save: string
     readonly add: string
+    readonly create: string
   }
 }

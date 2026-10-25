@@ -77,7 +77,7 @@ export class ApiError extends Error {
 }
 
 export interface RequestOptions {
-  readonly method?: 'GET' | 'POST'
+  readonly method?: 'GET' | 'POST' | 'PATCH' | 'DELETE'
   /** Sent as JSON. `undefined` sends no body and no content type. */
   readonly body?: unknown
   readonly signal?: AbortSignal

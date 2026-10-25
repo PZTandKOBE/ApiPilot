@@ -26,9 +26,11 @@ const CARD_HEIGHT = 400
     <div
       class="mx-auto flex max-w-2xl flex-col items-center gap-4 text-center lg:mx-0 lg:max-w-xl lg:items-start lg:text-left"
     >
-      <span class="mockup-label">{{ t('showcase.eyebrow') }}</span>
+      <span class="text-[11px] font-medium tracking-[0.02em] text-[var(--text-secondary)]">
+        {{ t('showcase.eyebrow') }}
+      </span>
       <h2
-        class="text-2xl font-semibold tracking-[-0.02em] text-[var(--text-primary)] sm:text-3xl"
+        class="text-balance text-2xl font-semibold leading-tight tracking-[-0.02em] text-[var(--text-primary)] sm:text-3xl"
       >
         {{ t('showcase.title') }}
       </h2>

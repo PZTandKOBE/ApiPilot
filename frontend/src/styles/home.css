@@ -129,9 +129,13 @@
  * ------------------------------------------------------------------ */
 
 .hero-stage {
+  --home-nav-h: 72px;
+
   position: relative;
   z-index: 10;
-  min-height: 100svh;
+  /* The navbar is a sibling above this stage, so reserving a full 100svh here
+     would add its height again and guarantee 72px of unnecessary scroll. */
+  min-height: calc(100svh - var(--home-nav-h));
 }
 
 /* StrokeText draws into an SVG sized from its own `font-size`, so both the

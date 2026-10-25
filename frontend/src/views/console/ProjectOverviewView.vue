@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MagicStick, Promotion } from '@element-plus/icons-vue'
+import { EditPen, MagicStick, Plus, Promotion } from '@element-plus/icons-vue'
 import {
   ElButton,
   ElIcon,
@@ -7,14 +7,23 @@ import {
   ElTableColumn,
   ElTag,
 } from 'element-plus'
-import { computed } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import ConsolePageHeader from '@/components/console/ConsolePageHeader.vue'
+import EnvironmentCreateDialog from '@/components/console/EnvironmentCreateDialog.vue'
+import EnvironmentEditDialog from '@/components/console/EnvironmentEditDialog.vue'
+import ProjectEditDialog from '@/components/console/ProjectEditDialog.vue'
+import ProjectSpecPanel from '@/components/console/ProjectSpecPanel.vue'
 import { useI18n } from '@/i18n'
+import { getProjectSpec } from '@/services/api/projects'
 import { useProjectStore } from '@/stores/project'
 import { formatDate } from '@/utils/time'
-import type { EnvironmentKind, ProjectEnvironment } from '@/types/project'
+import type {
+  EnvironmentKind,
+  ProjectEnvironment,
+  ProjectSpecSummary,
+} from '@/types/project'
 
 /**
  * Project landing page.
@@ -32,14 +41,73 @@ const store = useProjectStore()
 
 const project = computed(() => store.projectById(props.projectId))
 
+const projectEditOpen = ref(false)
+const environmentCreateOpen = ref(false)
+const environmentEditOpen = ref(false)
+const editingEnvironment = ref<ProjectEnvironment | null>(null)
+
+const spec = ref<ProjectSpecSummary | null>(null)
+const specLoading = ref(false)
+const specError = ref(false)
+let specRequest = 0
+
+const loadSpec = async (): Promise<void> => {
+  const projectId = props.projectId
+  const request = (specRequest += 1)
+
+  spec.value = null
+  specLoading.value = true
+  specError.value = false
+
+  try {
+    const loaded = await getProjectSpec(projectId)
+
+    if (request !== specRequest) return
+    spec.value = loaded
+  } catch {
+    if (request !== specRequest) return
+
+    spec.value = null
+    specError.value = true
+  } finally {
+    if (request === specRequest) specLoading.value = false
+  }
+}
+
+watch(
+  () => props.projectId,
+  () => {
+    projectEditOpen.value = false
+    environmentCreateOpen.value = false
+    environmentEditOpen.value = false
+    editingEnvironment.value = null
+
+    void loadSpec()
+  },
+  { immediate: true },
+)
+
+const openProjectEdit = (): void => {
+  if (project.value === null) return
+  projectEditOpen.value = true
+}
+
+const openEnvironmentEdit = (row: unknown): void => {
+  const environment = row as ProjectEnvironment
+  editingEnvironment.value = environment
+  environmentEditOpen.value = true
+}
+
 const KIND_COLOR: Readonly<Record<EnvironmentKind, string>> = {
   development: 'var(--accent)',
+  testing: 'var(--status-pass)',
   staging: 'var(--status-warn)',
   production: 'var(--status-fail)',
 }
 
 const KIND_LABEL_KEY: Readonly<Record<EnvironmentKind, string>> = {
   development: 'console.environment.development',
+  testing: 'console.environment.testing',
   staging: 'console.environment.staging',
   production: 'console.environment.production',
 }
@@ -62,7 +130,7 @@ const updatedLabel = computed(() => {
   return value === undefined ? '' : formatDate(value, locale.value)
 })
 
-/** Both destinations arrive in later phases; until then the buttons are inert. */
+/** A destination is live only when its route is registered. */
 const apiClientAvailable = computed(() => router.hasRoute('console-project-api'))
 const testLabAvailable = computed(() => router.hasRoute('console-project-ai-test'))
 
@@ -86,6 +154,11 @@ const go = (name: string, available: boolean): void => {
       </template>
 
       <template #actions>
+        <ElButton size="small" @click="openProjectEdit">
+          <ElIcon class="mr-1.5"><EditPen /></ElIcon>
+          {{ t('console.overview.editProject') }}
+        </ElButton>
+
         <ElButton
           size="small"
           :disabled="!apiClientAvailable"
@@ -93,7 +166,7 @@ const go = (name: string, available: boolean): void => {
           @click="go('console-project-api', apiClientAvailable)"
         >
           <ElIcon class="mr-1.5"><Promotion /></ElIcon>
-          {{ t('console.overview.openApiClient') }}
+          {{ t('console.nav.apiClient') }}
         </ElButton>
 
         <ElButton
@@ -104,19 +177,25 @@ const go = (name: string, available: boolean): void => {
           @click="go('console-project-ai-test', testLabAvailable)"
         >
           <ElIcon class="mr-1.5"><MagicStick /></ElIcon>
-          {{ t('console.overview.openTestLab') }}
+          {{ t('console.nav.aiTestLab') }}
         </ElButton>
       </template>
     </ConsolePageHeader>
 
     <!-- Environments -->
     <section class="console-panel mb-4">
-      <header class="border-b border-[var(--console-border)] px-4 py-3">
+      <header
+        class="flex items-center justify-between gap-3 border-b border-[var(--console-border)] px-4 py-3"
+      >
         <span class="console-label">{{ t('console.overview.environments') }}</span>
+        <ElButton size="small" @click="environmentCreateOpen = true">
+          <ElIcon class="mr-1.5"><Plus /></ElIcon>
+          {{ t('console.overview.addEnvironment') }}
+        </ElButton>
       </header>
 
       <ElTable :data="environments" size="small" class="console-table">
-        <ElTableColumn :label="t('console.project.switcherLabel')" min-width="140">
+        <ElTableColumn :label="t('console.overview.environmentName')" min-width="140">
           <template #default="{ row }">
             <span class="text-[12.5px] text-[var(--console-text)]">
               {{ row.name }}
@@ -158,17 +237,30 @@ const go = (name: string, available: boolean): void => {
             </span>
           </template>
         </ElTableColumn>
+
+        <ElTableColumn
+          :label="t('console.overview.actions')"
+          width="90"
+          align="right"
+        >
+          <template #default="{ row }">
+            <ElButton link size="small" @click="openEnvironmentEdit(row)">
+              {{ t('console.overview.edit') }}
+            </ElButton>
+          </template>
+        </ElTableColumn>
       </ElTable>
     </section>
 
     <!-- Specification + next step -->
     <div class="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-      <section class="console-panel p-4">
-        <p class="console-label mb-2.5">{{ t('console.overview.spec') }}</p>
-        <p class="font-mono text-[12.5px] text-[var(--console-text)]">
-          {{ project.specName ?? t('console.overview.noSpec') }}
-        </p>
-      </section>
+      <ProjectSpecPanel
+        :spec="spec"
+        :loading="specLoading"
+        :error="specError"
+        @retry="loadSpec"
+        @open-test-lab="go('console-project-ai-test', testLabAvailable)"
+      />
 
       <section class="console-panel p-4">
         <p class="console-label mb-2.5">{{ t('console.overview.quickStart') }}</p>
@@ -177,5 +269,23 @@ const go = (name: string, available: boolean): void => {
         </p>
       </section>
     </div>
+
+    <ProjectEditDialog
+      v-if="project !== null"
+      v-model="projectEditOpen"
+      :project="project"
+    />
+
+    <EnvironmentEditDialog
+      v-if="editingEnvironment !== null"
+      v-model="environmentEditOpen"
+      :project-id="projectId"
+      :environment="editingEnvironment"
+    />
+
+    <EnvironmentCreateDialog
+      v-model="environmentCreateOpen"
+      :project-id="projectId"
+    />
   </div>
 </template>

@@ -1,11 +1,13 @@
 /**
  * The agent service, over HTTP.
  *
- * Two endpoints, fixed by the backend: `POST /api/projects/{id}/agent/tasks`
- * creates and runs a task, `GET /api/agent/tasks/{id}` reads one back.  The
- * adapter's whole job is the shape the rest of the console already understands:
- * a task result carrying the plan tree and — on the response that produced it —
- * the understanding.
+ * The backend fixes three reads/writes: `POST /api/projects/{id}/agent/tasks`
+ * creates and runs a task, `GET /api/agent/tasks/{id}` reads one back, and
+ * `GET /api/projects/{id}/agent/tasks` lists recent task summaries for the
+ * dashboard. The adapter's whole job is the shape the rest of the console
+ * already understands: a task result carrying the plan tree and, on the
+ * response that produced it, the understanding; the list carries only the
+ * persisted activity fields.
  *
  * Three decisions are worth knowing about.
  *
@@ -46,7 +48,12 @@ import type {
 import { ApiError, request } from '@/services/http'
 import { DEMO_OPENAPI_DOCUMENT, DEMO_SPEC_FILENAME } from '@/services/spec/demo'
 import { parseSpecContent } from '@/services/spec/parse'
-import { AGENT_TASK_STATUSES, type AgentTaskStatus, type TestPlan } from '@/types/agent'
+import {
+  AGENT_TASK_STATUSES,
+  type AgentTaskStatus,
+  type AgentTaskSummary,
+  type TestPlan,
+} from '@/types/agent'
 
 const ANALYZE_FAILED = 'console.aiTest.errors.analyzeFailed'
 const GENERATE_FAILED = 'console.aiTest.errors.generateFailed'
@@ -92,6 +99,13 @@ export const isRenderableAgentErrorKey = (key: string): boolean =>
  * not part of the model the UI draws.  The plan and the understanding inside it
  * *are* domain types -- the backend models mirror them field for field.
  */
+/** The audit record's fields that this console uses. */
+interface AgentTaskAuditWireResponse {
+  readonly taskId: string
+  readonly status: string
+  readonly understanding: AgentUnderstandingWire | null
+}
+
 interface AgentTaskWireResponse {
   readonly id: string
   readonly projectId: string
@@ -144,6 +158,20 @@ const planIsRenderable = (plan: unknown): plan is TestPlan => {
   )
 }
 
+/** The fields the dashboard reads from one task-summary row. */
+const taskSummaryIsRenderable = (value: unknown): value is AgentTaskSummary => {
+  if (!isRecord(value)) return false
+
+  return (
+    typeof value.id === 'string' &&
+    typeof value.projectId === 'string' &&
+    typeof value.prompt === 'string' &&
+    asTaskStatus(value.status) !== null &&
+    typeof value.createdAt === 'string' &&
+    typeof value.updatedAt === 'string'
+  )
+}
+
 const toAgentError = (thrown: unknown, fallbackCode: AgentErrorCode, fallbackKey: string): AgentError => {
   if (thrown instanceof ApiError) {
     const error: AgentError = {
@@ -177,6 +205,9 @@ const projectTasksPath = (projectId: string): string =>
   '/api/projects/' + encodeURIComponent(projectId) + '/agent/tasks'
 
 const taskPath = (taskId: string): string => '/api/agent/tasks/' + encodeURIComponent(taskId)
+
+const taskAuditPath = (taskId: string): string =>
+  taskPath(taskId) + '/audit'
 
 const projectPlansPath = (projectId: string): string =>
   '/api/projects/' + encodeURIComponent(projectId) + '/plans'
@@ -241,6 +272,32 @@ export const createHttpAgentService = (): AgentService => ({
     }, 'task-not-found', LOAD_FAILED)
   },
 
+  async getTaskAudit(taskId: string) {
+    return guarded(async () => {
+      const body = await request<AgentTaskAuditWireResponse>(taskAuditPath(taskId))
+
+      // The audit's understanding is the same validated wire shape as the task
+      // response; null means the task stopped before analysis.
+      return body.understanding ?? null
+    }, 'task-not-found', LOAD_FAILED)
+  },
+
+  async listTasks(projectId: string, limit = 3) {
+    return guarded(async () => {
+      const query = '?limit=' + encodeURIComponent(String(limit))
+      const body = await request<readonly unknown[]>(projectTasksPath(projectId) + query)
+
+      if (!Array.isArray(body) || !body.every((task) => taskSummaryIsRenderable(task))) {
+        throw new AgentServiceError({
+          code: 'analyze-failed',
+          messageKey: LOAD_FAILED,
+        })
+      }
+
+      return body as readonly AgentTaskSummary[]
+    }, 'analyze-failed', LOAD_FAILED)
+  },
+
   async listPlans(projectId: string) {
     return guarded(async () => {
       const body = await request<readonly unknown[]>(projectPlansPath(projectId))
@@ -253,6 +310,15 @@ export const createHttpAgentService = (): AgentService => ({
       }
 
       return body as readonly TestPlan[]
+    }, 'generate-failed', GENERATE_FAILED)
+  },
+
+  async deletePlan(projectId: string, planId: string) {
+    await guarded(async () => {
+      await request<void>(
+        projectPlansPath(projectId) + '/' + encodeURIComponent(planId),
+        { method: 'DELETE' },
+      )
     }, 'generate-failed', GENERATE_FAILED)
   },
 })

@@ -35,7 +35,14 @@ import type {
   ParsedSpec,
   SpecInput,
 } from '@/services/agent'
-import type { AnalysisStage, ApiSpec, ApiUnderstanding, PlanSource, TestPlan } from '@/types/agent'
+import type {
+  AgentTaskSummary,
+  AnalysisStage,
+  ApiSpec,
+  ApiUnderstanding,
+  PlanSource,
+  TestPlan,
+} from '@/types/agent'
 import { ANALYSIS_STAGES } from '@/types/agent'
 import { buildUnderstanding } from './analyze'
 import { buildPlan } from './plan'
@@ -90,6 +97,13 @@ export const createMockAgentService = (): MockAgentService => {
    * double can honestly promise.
    */
   const tasks = new Map<string, AgentTaskResult>()
+
+  /**
+   * The summary rows the dashboard lists. The result map holds the plan tree;
+   * this one holds only the persisted-activity fields the list endpoint would
+   * return, and is what makes the double honest about listTasks.
+   */
+  const taskSummaries = new Map<string, AgentTaskSummary>()
 
   /**
    * Plans by project/document series, so regeneration can allocate the next
@@ -223,7 +237,16 @@ export const createMockAgentService = (): MockAgentService => {
         plan: nextPlan,
       }
 
+      const now = new Date().toISOString()
       tasks.set(taskId, result)
+      taskSummaries.set(taskId, {
+        id: taskId,
+        projectId: input.projectId,
+        prompt: input.prompt,
+        status: 'completed',
+        createdAt: now,
+        updatedAt: now,
+      })
 
       return result
     },
@@ -241,11 +264,53 @@ export const createMockAgentService = (): MockAgentService => {
       return found
     },
 
+    async getTaskAudit(taskId: string) {
+      const found = tasks.get(taskId)
+
+      if (found === undefined) {
+        throw new AgentServiceError({
+          code: 'task-not-found',
+          messageKey: 'console.aiTest.errors.taskNotFound',
+        })
+      }
+
+      return found.understanding
+    },
+
+    async listTasks(projectId: string, limit = 3) {
+      return [...taskSummaries.values()]
+        .filter((item) => item.projectId === projectId)
+        .sort(
+          (left, right) =>
+            right.createdAt.localeCompare(left.createdAt) ||
+            right.id.localeCompare(left.id),
+        )
+        .slice(0, limit)
+        .map((item) => ({ ...item }))
+    },
+
     async listPlans(projectId: string) {
       return [...series.values()]
         .flat()
         .filter((item) => item.projectId === projectId)
         .map((item) => ({ ...item }))
+    },
+
+    async deletePlan(projectId: string, planId: string) {
+      const key = [...series.keys()].find((candidate) =>
+        (series.get(candidate) ?? []).some(
+          (item) => item.projectId === projectId && item.id === planId,
+        ),
+      )
+
+      if (key === undefined) {
+        throw new AgentServiceError({
+          code: 'generate-failed',
+          messageKey: 'console.plans.notFound',
+        })
+      }
+
+      series.delete(key)
     },
   }
 }

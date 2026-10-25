@@ -277,6 +277,54 @@ describe('listPlans', () => {
   })
 })
 
+describe('listTasks', () => {
+  it('reads the project task collection with the requested limit', async () => {
+    respond = (recorded, response) => {
+      expect(recorded.method).toBe('GET')
+      expect(recorded.url).toBe('/api/projects/' + PROJECT + '/agent/tasks?limit=2')
+      json(response, 200, [
+        {
+          id: TASK_ID,
+          projectId: PROJECT,
+          prompt: 'Design a test plan for Verify API.',
+          status: 'failed',
+          createdAt: '2026-10-07T10:00:00Z',
+          updatedAt: '2026-10-07T10:05:00Z',
+        },
+        {
+          id: '22222222-2222-2222-2222-222222222222',
+          projectId: PROJECT,
+          prompt: 'Design a test plan for another document.',
+          status: 'completed',
+          createdAt: '2026-10-06T10:00:00Z',
+          updatedAt: '2026-10-06T10:00:00Z',
+        },
+      ])
+    }
+
+    const tasks = await service.listTasks(PROJECT, 2)
+
+    expect(tasks).toHaveLength(2)
+    expect(tasks[0]).toMatchObject({
+      id: TASK_ID,
+      projectId: PROJECT,
+      status: 'failed',
+      createdAt: '2026-10-07T10:00:00Z',
+      updatedAt: '2026-10-07T10:05:00Z',
+    })
+  })
+
+  it('refuses a row the dashboard could not render', async () => {
+    respond = (_recorded, response) => {
+      json(response, 200, [{ id: TASK_ID, status: 'completed' }])
+    }
+
+    await expect(service.listTasks(PROJECT)).rejects.toMatchObject({
+      detail: { code: 'analyze-failed' },
+    })
+  })
+})
+
 describe('runTask', () => {
   it('asks the server for a task, with the body the endpoint declares', async () => {
     respond = (_recorded, response) => {
@@ -370,6 +418,24 @@ describe('runTask', () => {
   })
 })
 
+describe('deletePlan', () => {
+  it('issues DELETE against the project-scoped plan path', async () => {
+    respond = (_recorded, response) => {
+      response.writeHead(204)
+      response.end()
+    }
+
+    await service.deletePlan(PROJECT, plan.id)
+
+    const calls = agentRequests()
+    expect(calls).toHaveLength(1)
+    expect(calls[0]?.method).toBe('DELETE')
+    expect(calls[0]?.url).toBe(
+      '/api/projects/' + PROJECT + '/plans/' + plan.id,
+    )
+  })
+})
+
 describe('getTask', () => {
   it('reads a task back by its id', async () => {
     respond = (_recorded, response) => {
@@ -386,6 +452,48 @@ describe('getTask', () => {
     expect(reads[0]?.url).toBe('/api/agent/tasks/' + TASK_ID)
     expect(result.plan?.id).toBe('plan_verify_1')
     expect(result.understanding).toBeNull()
+  })
+})
+
+describe('getTaskAudit', () => {
+  it('reads the validated understanding from the existing audit endpoint', async () => {
+    respond = (_recorded, response) => {
+      json(response, 200, {
+        taskId: TASK_ID,
+        status: 'completed',
+        understanding,
+        failureStage: null,
+        failureCode: null,
+        failureMessage: null,
+        analyzer: { provider: 'deterministic', model: null, promptVersion: null },
+        planner: { provider: 'deterministic', model: null, promptVersion: null },
+        planDesign: null,
+        usage: { analyze: null, generatePlan: null },
+        createdAt: '2026-10-07T10:00:00Z',
+        updatedAt: '2026-10-07T10:00:00Z',
+      })
+    }
+
+    const restored = await service.getTaskAudit(TASK_ID)
+
+    const reads = agentRequests()
+    expect(reads).toHaveLength(1)
+    expect(reads[0]?.method).toBe('GET')
+    expect(reads[0]?.url).toBe('/api/agent/tasks/' + TASK_ID + '/audit')
+    expect(restored?.specId).toBe(SPEC)
+    expect(restored?.endpoints).toHaveLength(1)
+  })
+
+  it('returns null when the task stopped before analysis', async () => {
+    respond = (_recorded, response) => {
+      json(response, 200, {
+        taskId: TASK_ID,
+        status: 'failed',
+        understanding: null,
+      })
+    }
+
+    await expect(service.getTaskAudit(TASK_ID)).resolves.toBeNull()
   })
 })
 

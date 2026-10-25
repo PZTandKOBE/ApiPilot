@@ -87,20 +87,20 @@ export const zhCN = {
   },
   hero: {
     titleLines: ['AI API', 'TESTING AGENT'],
-    subtitleLine1: '让 Agent 真正理解你的 API，',
-    subtitleLine2: '从测试计划到自动执行。',
+    headline: '让 AI 帮你规划 API 测试',
+    support: '计划先由你确认，再执行测试',
     tryUs: 'TRY US',
     learnUs: 'LEARN US',
-    badge: '开源 · Agentic API 测试平台',
+    badge: '开源 · Agent 驱动的 API 测试平台',
     ctaHint: '无需注册即可了解测试计划流程',
   },
   showcase: {
     eyebrow: '如何工作',
-    title: '从 API 文档到一次可验证的测试执行。',
+    title: '从 API 文档生成可执行的测试计划',
     description:
-      'Agent 阅读你的 API，推断接口之间的依赖关系，生成测试计划，等待你批准，然后执行并收集证据。',
+      '导入 OpenAPI 文档后，Agent 会梳理接口依赖、补全请求与断言，生成可审核的测试计划，等你批准后再执行并保留结果与证据',
     cardLabel: '预览',
-    steps: ['理解', '发现', '计划', '批准', '执行', '验证'],
+    steps: ['导入文档', '梳理依赖', '生成计划', '批准计划', '执行测试', '查看结果'],
   },
   apiTesting: {
     kicker: 'API 客户端',

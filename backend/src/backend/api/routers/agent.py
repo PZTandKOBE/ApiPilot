@@ -5,8 +5,10 @@ run routes already established (`frontend/docs/phase-6.2-backend-rest-contract.m
 section 5): **a collection lives under its project, an item is addressed by its
 own id.**
 
+* `GET  /api/projects/{project_id}/agent/tasks` -- read recent task activity.
 * `POST /api/projects/{project_id}/agent/tasks` -- ask the agent for a plan.
 * `GET  /api/projects/{project_id}/plans`     -- read every plan version.
+* `DELETE /api/projects/{project_id}/plans/{plan_id}` -- retire a plan series.
 * `GET  /api/agent/tasks/{task_id}`          -- read the task and its plan.
 
 The alternative the brief floated, `POST /api/agent/tasks` with the project only
@@ -29,7 +31,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Path, Request, status
+from fastapi import APIRouter, Path, Query, Request, Response, status
 
 from backend.api.deps import CurrentGuestSessionDep, SessionDep
 from backend.api.errors import ERROR_RESPONSES
@@ -37,6 +39,7 @@ from backend.schemas.agent import (
     AgentPlanResponse,
     AgentTaskCreateRequest,
     AgentTaskResponse,
+    AgentTaskSummaryResponse,
 )
 from backend.schemas.agent_audit import AgentTaskAuditResponse
 from backend.services import agent, guest_access, guest_limits
@@ -61,6 +64,29 @@ TaskId = Annotated[
             "`public_id` column, so the row key is the external one."
         ),
         examples=["6f1c1f4e-4a4e-4e2a-9f0e-3a1d2b3c4d5e"],
+    ),
+]
+
+PlanId = Annotated[
+    str,
+    Path(
+        description="The plan's project-scoped public id, e.g. plan_orders_api_1a2b3c4d.",
+        examples=["plan_orders_api_1a2b3c4d"],
+    ),
+]
+
+DEFAULT_AGENT_TASK_LIMIT = 3
+MAX_AGENT_TASK_LIMIT = 20
+
+AgentTaskLimit = Annotated[
+    int,
+    Query(
+        ge=1,
+        le=MAX_AGENT_TASK_LIMIT,
+        description=(
+            "Maximum tasks to return. The dashboard asks for its three most recent "
+            "records; the ceiling keeps the collection bounded."
+        ),
     ),
 ]
 
@@ -89,6 +115,68 @@ async def list_project_plans(
     )
 
     return await agent.list_plans(session, project_id=project_id)
+
+
+@router.delete(
+    "/projects/{project_id}/plans/{plan_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Retire a test plan and all of its versions",
+    responses=ERROR_RESPONSES,
+)
+async def delete_project_plan(
+    project_id: ProjectId,
+    plan_id: PlanId,
+    session: SessionDep,
+    guest: CurrentGuestSessionDep,
+) -> Response:
+    """Soft-delete one document's plan series, preserving its execution history.
+
+    The plan row is retired through the existing deleted_at contract rather
+    than hard-deleted: historical runs keep a NO ACTION reference and a frozen
+    planName snapshot, and their PDF reports stay in the database. Every live
+    version in the same project/document series is retired in one transaction;
+    other plans, projects and identity data are untouched.
+
+    204 No Content -- there is nothing else to say.
+    """
+    project = await guest_access.require_guest_project_access(
+        session, project_public_id=project_id, guest=guest
+    )
+
+    await agent.delete_plan(session, project=project, plan_id=plan_id)
+    await session.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get(
+    "/projects/{project_id}/agent/tasks",
+    response_model=list[AgentTaskSummaryResponse],
+    summary="Read a project's recent agent tasks",
+    responses=ERROR_RESPONSES,
+)
+async def list_project_agent_tasks(
+    project_id: ProjectId,
+    session: SessionDep,
+    guest: CurrentGuestSessionDep,
+    limit: AgentTaskLimit = DEFAULT_AGENT_TASK_LIMIT,
+) -> list[AgentTaskSummaryResponse]:
+    """The project's most recent agent tasks, newest first.
+
+    This is the activity collection behind the dashboard.  It returns only the
+    task's own persisted facts -- prompt, status and timestamps -- so a task is
+    visible whether it is still pending, analysing, completed or failed.  It
+    does not read a plan tree or an audit row; those remain their own endpoints.
+
+    Access is the same project check every other project-scoped route uses:
+    "not yours", "does not exist" and "belongs to a registered user" all become
+    the same 404.  Reads do not consume the guest task quota.
+    """
+    await guest_access.require_guest_project_access(
+        session, project_public_id=project_id, guest=guest
+    )
+
+    return await agent.list_tasks(session, project_id=project_id, limit=limit)
 
 
 @router.post(

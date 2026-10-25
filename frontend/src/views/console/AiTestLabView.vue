@@ -2,74 +2,158 @@
 import { MagicStick, Right } from '@element-plus/icons-vue'
 import { ElAlert, ElButton, ElIcon, ElMessage, ElMessageBox } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import AgentAnalysisProgress from '@/components/console/Agent/AgentAnalysisProgress.vue'
-import AgentFindingCard from '@/components/console/Agent/AgentFindingCard.vue'
 import AgentHandoffCard from '@/components/console/Agent/AgentHandoffCard.vue'
 import AgentPipelineSteps from '@/components/console/Agent/AgentPipelineSteps.vue'
 import AgentSpecSummary from '@/components/console/Agent/AgentSpecSummary.vue'
-import ApiDependencyGraph from '@/components/console/Agent/ApiDependencyGraph.vue'
-import ApiRiskList from '@/components/console/Agent/ApiRiskList.vue'
-import ApiUnderstandingPanel from '@/components/console/Agent/ApiUnderstandingPanel.vue'
-import ApprovalPanel from '@/components/console/Agent/ApprovalPanel.vue'
+import AnalysisReviewPanel from '@/components/console/Agent/AnalysisReviewPanel.vue'
 import SpecUploader from '@/components/console/Agent/SpecUploader.vue'
-import TestPlan from '@/components/console/Agent/TestPlan.vue'
 import ConsolePageHeader from '@/components/console/ConsolePageHeader.vue'
+import { useLocalizedText } from '@/composables/useLocalizedText'
 import { useI18n } from '@/i18n'
 import { useAgentStore } from '@/stores/agent'
+import { useProjectStore } from '@/stores/project'
 
 /**
  * AI Test Lab.
  *
  * The page is a state machine over the store, and every branch is one the user
  * can actually reach: nothing loaded, loaded but unanalysed, analysing,
- * analysed, planned. There is no separate "dashboard" of empty cards waiting
- * to be filled — an empty lab shows the one thing you can do next.
+ * analysed.  The plan is deliberately *not* rendered here any more: the lab
+ * produces the analysis and the plan, but the plan's scenarios, steps,
+ * assertions and approval controls belong to Test Plans.
  *
- * This is also where the difference between the two halves of the product is
- * most visible: the API Client is where *you* call the API, and this is where
- * the agent reads the API and proposes what to call.
+ * The compact handoff at the end of the page is the only plan-shaped thing in
+ * the lab.  It reports whether a plan exists and navigates to the real plan
+ * destination; it never becomes a second copy of the plan page.
  */
 const { t } = useI18n()
+const { localize } = useLocalizedText()
 const store = useAgentStore()
+const projectStore = useProjectStore()
+const route = useRoute()
+const router = useRouter()
 
 /** Set by "Replace" so an existing spec can be swapped without discarding it first. */
 const replacing = ref(false)
 
-const showUploader = computed(() => store.currentSpec === null || replacing.value)
-const analysing = computed(() => store.analyzing)
-const showUnderstanding = computed(
-  () => store.understanding !== null && !store.analyzing,
+/**
+ * The spec that belongs to the project now selected.
+ *
+ * Active project changes can leave the previous parsed document and analysis in
+ * the agent store until asynchronous rehydration finishes. The page must not
+ * show that previous project's document, plan or review in the gap.
+ */
+const activeSpec = computed(() =>
+  store.currentSpec?.projectId === projectStore.activeProjectId
+    ? store.currentSpec
+    : null,
 )
 
+/** The project id the route is showing; used for plan destination safety. */
+const pageProjectId = computed(() => {
+  const id = route.params.projectId
+  return typeof id === 'string' ? id : projectStore.activeProjectId
+})
+
+const showUploader = computed(() => activeSpec.value === null || replacing.value)
+const analysing = computed(() => store.analyzing)
+const showUnderstanding = computed(() => {
+  const understanding = store.understanding
+  const spec = activeSpec.value
+
+  return (
+    understanding !== null &&
+    spec !== null &&
+    understanding.specId === spec.id &&
+    !store.analyzing
+  )
+})
+
 /**
- * The plan section stands on its own.
+ * The plan handoff stands on its own.
  *
  * The plan is written by the server and comes back on every task, so it survives
  * a reload; the understanding is never persisted and exists only on the response
- * that produced it. Gating the plan on the understanding would hide a stored,
- * reviewable plan from a user who merely refreshed the page -- and the approval
- * gate is the only thing that should decide whether a plan can be run.
+ * that produced it. Gating the handoff on the understanding would hide a stored,
+ * reviewable plan from a user who merely refreshed the page.
  */
-const showPlan = computed(() => store.currentSpec !== null)
+const hasPlan = computed(() => store.activePlan !== null)
+const activePlan = computed(() => store.activePlan)
+const showPlanHandoff = computed(
+  () => activeSpec.value !== null && (showUnderstanding.value || hasPlan.value),
+)
+
+const activeVersion = computed(() => activePlan.value?.version ?? 1)
+const activePlanName = computed(() =>
+  activePlan.value === null ? '' : localize(activePlan.value.name),
+)
+
+/** A plan-conflict is an answer with a real destination, not a dead generation. */
+const planConflict = computed(
+  () =>
+    activeSpec.value !== null &&
+    hasPlan.value &&
+    store.planError?.code === 'plan-exists',
+)
 
 /** A parse failure and a generation failure are both worth one banner. */
 const activeError = computed(() => store.planError ?? store.analysisError)
+const showErrorBanner = computed(
+  () => activeError.value !== null && !planConflict.value,
+)
 
 const errorMessage = computed(() => {
   const error = activeError.value
   return error === null ? '' : t(error.messageKey, error.params)
 })
 
-const hasPlan = computed(() => store.activePlan !== null)
-const activeVersion = computed(() => store.activePlan?.version ?? 1)
-const activeIsCurrent = computed(() => store.activePlan?.isCurrent === true)
+/**
+ * The current plan's real detail route, or null when no plan belongs to the
+ * project the page is showing.  The project id comes from the plan itself and
+ * is checked against the route; a plan id from another project is never used.
+ */
+const planDestination = computed(() => {
+  const plan = activePlan.value
+  if (plan === null || plan.projectId !== pageProjectId.value) return null
 
-onMounted(() => {
+  return {
+    name: 'console-project-plan-detail' as const,
+    params: { projectId: plan.projectId, planId: plan.id },
+  }
+})
+
+/**
+ * Open the current plan when one is safe to locate; otherwise open the existing
+ * plan list for this project.  This is navigation only: no approval, no
+ * generation and no execution is triggered.
+ */
+const openPlan = (): void => {
+  if (planDestination.value !== null) {
+    void router.push(planDestination.value)
+    return
+  }
+
+  if (pageProjectId.value !== '') {
+    void router.push({
+      name: 'console-project-plans',
+      params: { projectId: pageProjectId.value },
+    })
+  }
+}
+
+onMounted(async () => {
   // The plans a browser shows are also server state.  Without this refresh a
   // fresh tab sees no local plan, labels the action "Generate", and its
   // ordinary request is refused with 409 even though the plan exists.
-  void store.loadPlans()
+  await store.loadPlans()
+
+  // The understanding itself is not persisted, but the task audit is. Restore
+  // it after the plan so a reload shows the real five-step review instead of
+  // only the plan.
+  await store.restoreAnalysis()
 })
 
 const onPlanAction = async (): Promise<void> => {
@@ -127,7 +211,7 @@ watch(
       <AgentHandoffCard />
 
       <ElAlert
-        v-if="activeError !== null"
+        v-if="showErrorBanner"
         type="error"
         :closable="true"
         show-icon
@@ -141,99 +225,95 @@ watch(
       <SpecUploader v-if="showUploader" />
 
       <template v-else>
-        <AgentSpecSummary @replace="replacing = true" />
+        <!-- Before analysis the spec summary is the only context. After analysis
+             it becomes the first step of the review and is not repeated here. -->
+        <AgentSpecSummary v-if="!showUnderstanding" @replace="replacing = true" />
 
         <AgentAnalysisProgress v-if="analysing" />
 
-        <template v-if="showUnderstanding">
-          <ApiUnderstandingPanel />
+        <div v-if="showUnderstanding">
+          <AnalysisReviewPanel
+            @replace="replacing = true"
+            @continue-to-plan="openPlan"
+          />
+        </div>
 
-          <div class="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
-            <ApiDependencyGraph />
-            <ApiRiskList />
-          </div>
-
-          <!-- Agent activity -->
-          <section class="console-panel">
-            <header class="border-b border-[var(--console-border)] px-4 py-3">
-              <h2 class="text-[13px] font-semibold text-[var(--console-text)]">
-                {{ t('console.aiTest.findings.title') }}
+        <!-- The lab ends with a plan handoff, not a second copy of Test Plans.
+             The real plan page owns scenarios, assertions, editing, approval and
+             execution; this card only says whether a plan exists and where it is. -->
+        <section
+          v-if="showPlanHandoff"
+          data-testid="plan-handoff"
+          class="console-panel p-4"
+        >
+          <div class="flex flex-wrap items-start justify-between gap-4">
+            <div class="min-w-0">
+              <p class="console-label">{{ t('console.aiTest.plan.nextStep') }}</p>
+              <h2 class="mt-1 text-[14px] font-semibold text-[var(--console-text)]">
+                {{
+                  hasPlan
+                    ? t('console.aiTest.plan.readyTitle')
+                    : t('console.aiTest.plan.generateTitle')
+                }}
               </h2>
-            </header>
+              <p class="mt-1 max-w-2xl text-[11.5px] leading-relaxed text-[var(--console-text-muted)]">
+                {{
+                  hasPlan
+                    ? t('console.aiTest.plan.readyBody')
+                    : t('console.aiTest.plan.generateBody')
+                }}
+              </p>
 
-            <p
-              v-if="(store.understanding?.findings.length ?? 0) === 0"
-              class="px-4 py-6 text-center text-[12px] text-[var(--console-text-muted)]"
-            >
-              {{ t('console.aiTest.findings.empty') }}
-            </p>
-
-            <ul v-else class="flex flex-col divide-y divide-[var(--console-border)]">
-              <AgentFindingCard
-                v-for="finding in store.understanding?.findings ?? []"
-                :key="finding.id"
-                :finding="finding"
-              />
-            </ul>
-          </section>
-
-        </template>
-
-        <!-- Test plan: shown whenever a specification is loaded, whether or not
-             this browser has seen the understanding that goes with it. -->
-        <template v-if="showPlan">
-          <section class="flex flex-col gap-4">
-            <header class="flex flex-wrap items-center justify-between gap-3">
-              <div class="flex flex-wrap items-center gap-2">
-                <h2 class="text-[14px] font-semibold text-[var(--console-text)]">
-                  {{ t('console.aiTest.plan.title') }}
-                </h2>
-
+              <p v-if="hasPlan" class="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px]">
+                <span class="font-medium text-[var(--console-text)]">
+                  {{ activePlanName }}
+                </span>
                 <span
-                  v-if="hasPlan"
                   class="rounded border border-[var(--console-border)] px-1.5 py-px font-mono text-[10px] text-[var(--console-text-muted)]"
                 >
                   {{ t('console.plans.version', { version: activeVersion }) }}
                 </span>
-                <span
-                  v-if="hasPlan && activeIsCurrent"
-                  class="rounded border px-1.5 py-px text-[10px] whitespace-nowrap"
-                  :style="{
-                    color: 'var(--accent-soft)',
-                    borderColor: 'color-mix(in srgb, var(--accent) 34%, transparent)',
-                  }"
-                >
-                  {{ t('console.plans.current') }}
-                </span>
+              </p>
 
-                <RouterLink
-                  :to="{ name: 'console-project-plans' }"
-                  class="flex items-center gap-1 text-[11.5px] text-[var(--accent-soft)] hover:underline"
-                >
-                  {{ t('console.plans.viewAll') }}
-                  <ElIcon :size="11"><Right /></ElIcon>
-                </RouterLink>
-              </div>
-
-              <ElButton
-                size="small"
-                type="primary"
-                :loading="store.generating"
-                @click="onPlanAction"
+              <p
+                v-if="planConflict"
+                class="mt-1.5 text-[11.5px] leading-relaxed text-[var(--console-text-muted)]"
               >
-                <ElIcon v-if="!store.generating" class="mr-1.5"><MagicStick /></ElIcon>
-                {{
-                  hasPlan
-                    ? t('console.aiTest.plan.regenerate')
-                    : t('console.aiTest.plan.generate')
-                }}
-              </ElButton>
-            </header>
+                {{ t('console.aiTest.plan.existsHint') }}
+              </p>
+            </div>
 
-            <TestPlan show-open-link />
-            <ApprovalPanel />
-          </section>
-        </template>
+            <div class="flex shrink-0 flex-wrap items-center gap-2">
+              <template v-if="hasPlan">
+                <ElButton type="primary" @click="openPlan">
+                  {{ t('console.aiTest.plan.viewPlan') }}
+                  <ElIcon class="ml-1.5"><Right /></ElIcon>
+                </ElButton>
+                <ElButton
+                  text
+                  :loading="store.generating"
+                  @click="onPlanAction"
+                >
+                  {{ t('console.aiTest.plan.regenerate') }}
+                </ElButton>
+              </template>
+
+              <template v-else>
+                <ElButton
+                  type="primary"
+                  :loading="store.generating"
+                  @click="onPlanAction"
+                >
+                  <ElIcon v-if="!store.generating" class="mr-1.5"><MagicStick /></ElIcon>
+                  {{ t('console.aiTest.plan.generate') }}
+                </ElButton>
+                <ElButton text @click="openPlan">
+                  {{ t('console.aiTest.plan.openPlans') }}
+                </ElButton>
+              </template>
+            </div>
+          </div>
+        </section>
       </template>
     </div>
   </div>

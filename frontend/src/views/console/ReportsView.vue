@@ -134,14 +134,17 @@ const printPdf = async (report: RunReportSummary): Promise<void> => {
     </div>
 
     <div v-else class="console-panel overflow-hidden">
-      <table class="w-full table-fixed border-collapse text-left text-[12px]">
+      <table
+        class="report-table-center w-full table-fixed border-collapse text-left text-[12px]"
+        data-testid="reports-table"
+      >
         <thead class="bg-[var(--console-surface-hover)] text-[var(--console-text-muted)]">
           <tr>
-            <th class="w-[28%] px-3 py-2 font-medium">{{ t('console.report.reportName') }}</th>
-            <th class="w-[26%] px-3 py-2 font-medium">{{ t('console.report.runId') }}</th>
-            <th class="w-[14%] px-3 py-2 font-medium">{{ t('console.report.runStatus') }}</th>
+            <th class="w-[22%] px-3 py-2 font-medium">{{ t('console.report.reportName') }}</th>
+            <th class="w-[15%] px-3 py-2 font-medium">{{ t('console.report.runId') }}</th>
+            <th class="w-[10%] px-3 py-2 font-medium">{{ t('console.report.runStatus') }}</th>
             <th class="w-[18%] px-3 py-2 font-medium">{{ t('console.report.generatedAt') }}</th>
-            <th class="w-[14%] px-3 py-2 font-medium text-end">{{ t('console.report.openReport') }}</th>
+            <th class="w-[35%] px-3 py-2 font-medium text-end">{{ t('console.report.actions') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -157,7 +160,7 @@ const printPdf = async (report: RunReportSummary): Promise<void> => {
               </p>
             </td>
             <td class="px-3 py-3 font-mono text-[11px] text-[var(--console-text-dim)]">
-              {{ report.runId }}
+              <span class="break-all">{{ report.runId }}</span>
             </td>
             <td class="px-3 py-3">
               <RunStatusTag :status="report.runStatus" />
@@ -166,7 +169,12 @@ const printPdf = async (report: RunReportSummary): Promise<void> => {
               {{ formatDate(report.generatedAt, locale) }}
             </td>
             <td class="px-3 py-3">
-              <div class="flex flex-wrap justify-end gap-1.5">
+              <div
+                class="report-actions"
+                data-testid="report-actions"
+                role="group"
+                :aria-label="t('console.report.actions')"
+              >
                 <ElButton
                   size="small"
                   :loading="busyId === report.id"

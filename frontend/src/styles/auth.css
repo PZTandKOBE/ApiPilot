@@ -57,6 +57,15 @@
   margin-top: 24px;
 }
 
+/* A column stretch is not enough for a native button: its intrinsic width
+   otherwise wins in some browsers. Explicit width keeps OAuth and guest
+   buttons on the same left and right edges. */
+.login-actions .login-provider,
+.login-guest .login-provider {
+  width: 100%;
+  box-sizing: border-box;
+}
+
 .login-provider {
   display: flex;
   min-height: 44px;
@@ -73,6 +82,7 @@
   font-size: 13px;
   font-weight: 600;
   text-align: center;
+  white-space: normal;
   transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
 }
 
@@ -85,6 +95,13 @@
 .login-provider:disabled {
   cursor: not-allowed;
   opacity: 0.52;
+}
+
+.login-provider:focus-visible,
+.login-text-button:focus-visible,
+.login-back:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
 }
 
 .login-provider-primary {
@@ -105,9 +122,24 @@
 }
 
 .login-guest {
+  display: flex;
+  flex-direction: column;
   margin-top: 22px;
   padding-top: 18px;
   border-top: 1px solid var(--glass-border);
+}
+
+/* Guest is a main action, not a text link, but it is deliberately a tinted
+   button rather than a copy of the dark OAuth controls. */
+.login-guest-button {
+  border-color: color-mix(in srgb, var(--accent-soft) 52%, transparent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-soft);
+}
+
+.login-guest-button:hover:not(:disabled) {
+  border-color: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
 .login-guest-divider {
@@ -158,6 +190,101 @@
 
 .login-back:hover {
   color: var(--accent-soft) !important;
+}
+
+/* ------------------------------------------------------------------ *
+ * Sign-in dialog
+ *
+ * Scoped under .signin-dialog: the dialog is a console component, so these
+ * rules must not leak into every Element Plus button or dialog.
+ * ------------------------------------------------------------------ */
+
+.signin-dialog.el-dialog {
+  max-width: calc(100vw - 32px);
+}
+
+.signin-dialog .signin-actions {
+  width: 100%;
+}
+
+.signin-dialog .signin-provider {
+  position: relative;
+  display: inline-flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  width: 100%;
+  margin: 0;
+  min-height: 38px;
+  padding: 8px 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border-radius: 8px;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: normal;
+}
+
+.signin-dialog .signin-provider + .signin-provider {
+  margin-left: 0;
+}
+
+.signin-dialog .signin-provider svg {
+  flex: none;
+}
+
+/*
+ * The guest icon is an Element Plus icon component, not a bare SVG dropped into
+ * the button. A bare SVG has no intrinsic button-sized width and can become a
+ * huge replaced element, squeezing the label into a vertical column.
+ */
+.signin-dialog .signin-provider .signin-guest-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.signin-dialog .signin-provider .signin-guest-icon svg,
+.signin-dialog .signin-provider-guest svg {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.signin-dialog .signin-provider-label {
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.signin-dialog .signin-provider-state {
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  max-width: 96px;
+  transform: translateY(-50%);
+  color: var(--console-text-muted);
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: right;
+}
+
+.signin-dialog .signin-provider:focus-visible {
+  outline: 2px solid var(--accent-soft);
+  outline-offset: 2px;
+}
+
+@media (max-width: 420px) {
+  .signin-dialog .signin-provider {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .signin-dialog .signin-provider-state {
+    display: none;
+  }
 }
 
 @media (max-width: 560px) {

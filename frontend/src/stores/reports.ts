@@ -23,5 +23,9 @@ export const useReportsStore = defineStore('reports', () => {
     }
   }
 
-  return { reports, loading, error, load }
+  const forgetProject = (projectId: string): void => {
+    reports.value = reports.value.filter((report) => report.projectId !== projectId)
+  }
+
+  return { reports, loading, error, load, forgetProject }
 })

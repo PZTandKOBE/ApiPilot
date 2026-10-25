@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { createMemoryHistory, createRouter, type Router } from 'vue-router'
 
 import { useAuthStore } from '@/stores/auth'
+import { useLocaleStore } from '@/stores/locale'
 import LoginView from '@/views/LoginView.vue'
 
 const render = async (path: string): Promise<{ html: string; text: string }> => {
@@ -35,6 +36,7 @@ const render = async (path: string): Promise<{ html: string; text: string }> => 
 
 beforeEach(() => {
   setActivePinia(createPinia())
+  useLocaleStore().setLocale('en-US')
   const auth = useAuthStore()
   auth.mode = 'self_hosted'
   auth.initialized = true
@@ -98,12 +100,35 @@ describe('login page', () => {
       { id: 'google', configured: true },
     ]
 
-    const { text } = await render('/login')
+    const { text, html } = await render('/login')
 
     expect(text).toContain('Continue with GitHub')
     expect(text).toContain('Continue with Google')
     expect(text).toContain('Continue as Guest')
     expect(text).toContain('or')
+    expect(html).toContain('login-provider login-guest-button')
+    expect(html).toContain('login-guest')
+    expect((html.match(/class="login-provider/g) ?? []).length).toBe(3)
+  })
+
+  it('keeps the guest action full-width in Chinese copy', async () => {
+    const auth = useAuthStore()
+    auth.mode = 'official_cloud'
+    auth.loginRequired = false
+    auth.guestEnabled = true
+    auth.providers = [
+      { id: 'github', configured: true },
+      { id: 'google', configured: true },
+    ]
+    useLocaleStore().setLocale('zh-CN')
+
+    const { text, html } = await render('/login')
+
+    expect(text).toContain('使用 GitHub 继续')
+    expect(text).toContain('使用 Google 继续')
+    expect(text).toContain('以游客身份体验')
+    expect(html).toContain('login-guest-button')
+    expect((html.match(/class="login-provider/g) ?? []).length).toBe(3)
   })
 
   it('renders the callback error instead of a blank page', async () => {

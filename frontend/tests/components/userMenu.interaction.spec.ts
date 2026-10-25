@@ -138,7 +138,10 @@ describe('guest login interaction', () => {
     trigger?.click()
     await flush()
 
-    expect(text()).toContain('Settings')
+    // The account menu keeps identity and logout, but no Settings entry even
+    // though this test router still registers a settings route.
+    expect(text()).not.toContain('Settings')
+    expect(text()).toContain('No email provided')
     expect(text()).toContain('Log out')
     expect(text()).not.toContain('Guest mode')
     expect(text()).not.toContain('Sign in to account')
@@ -189,6 +192,21 @@ describe('guest login interaction', () => {
     expect(google).toBeDefined()
     expect(github?.disabled).toBe(false)
     expect(google?.disabled).toBe(false)
+    expect(github?.className).toContain('signin-provider')
+    expect(google?.className).toContain('signin-provider')
+    expect(github?.parentElement).toBe(google?.parentElement)
+    // The OAuth marks keep their own explicitly-sized SVGs.
+    expect(github?.querySelector('svg')?.getAttribute('width')).toBe('16')
+    expect(google?.querySelector('svg')?.getAttribute('width')).toBe('16')
+
+    const signInSpy = vi.spyOn(auth, 'signIn').mockResolvedValue(undefined)
+    github?.click()
+    await flush()
+    expect(signInSpy).toHaveBeenCalledWith('github', '/console')
+
+    google?.click()
+    await flush()
+    expect(signInSpy).toHaveBeenCalledWith('google', '/console')
   })
 
   it('starts a real guest session from the official guest dialog', async () => {
@@ -250,6 +268,17 @@ describe('guest login interaction', () => {
     const guest = Array.from(document.querySelectorAll<HTMLButtonElement>('.el-dialog button'))
       .find((button) => button.textContent?.includes('Continue as Guest'))
     expect(guest).toBeDefined()
+    expect(guest?.className).toContain('signin-provider')
+    expect(guest?.className).toContain('signin-provider-guest')
+    expect(guest?.querySelector('.signin-provider-label')?.textContent?.trim()).toBe(
+      'Continue as Guest',
+    )
+    const guestIcon = guest?.querySelector('.signin-guest-icon')
+    expect(guestIcon).not.toBeNull()
+    expect(guestIcon?.querySelector('svg')).not.toBeNull()
+    // The user glyph is an Element Plus icon component, not a bare SVG with no
+    // button-sized dimensions.
+    expect(guest?.querySelector('svg')?.parentElement?.classList.contains('el-icon')).toBe(true)
     guest?.click()
     await flush()
     await flush()

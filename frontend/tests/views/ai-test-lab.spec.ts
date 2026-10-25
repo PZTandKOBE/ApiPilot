@@ -36,9 +36,7 @@ const createTestRouter = async (): Promise<Router> => {
         name: 'console-project-plans',
         component: {},
       },
-      // The lab renders the plan preview with `show-open-link`, which resolves
-      // this route to build the "Open full plan" href. A stub without it makes
-      // the fixture disagree with the route table the view is written against.
+      // The lab navigates to this real plan detail route after generation.
       {
         path: '/console/projects/:projectId/plans/:planId',
         name: 'console-project-plan-detail',
@@ -88,8 +86,6 @@ const buttonWith = (html: string, label: string): string =>
   (html.match(/<button[\s\S]*?<\/button>/g) ?? []).find((button) =>
     textOf(button).includes(label),
   ) ?? ''
-
-const isDisabled = (button: string): boolean => /\sdisabled(?=[\s>])/.test(button)
 
 const loadAndAnalyse = async () => {
   const agent = useAgentStore()
@@ -166,7 +162,64 @@ describe('understanding', () => {
   })
 })
 
-describe('the approval boundary in the rendered page', () => {
+describe('analysis review', () => {
+  it('does not present the previous project’s analysis after a project switch', async () => {
+    await loadAndAnalyse()
+    useProjectStore().selectProject('prj_payments')
+
+    const html = await render()
+    expect(has(html, 'Analysis review')).toBe(false)
+    expect(has(html, 'Orders Platform API')).toBe(false)
+    expect(has(html, 'Test plan ready')).toBe(false)
+    expect(has(html, 'View test plan')).toBe(false)
+    expect(has(html, 'Upload an API specification')).toBe(true)
+  })
+
+  it('keeps the pipeline and five-step review, then hands off to Test Plans', async () => {
+    await loadAndAnalyse()
+    const html = await render()
+
+    // Main process indicator remains in its original place and meaning.
+    for (const label of ['API Spec', 'Analyze', 'Understanding', 'Test Plan', 'Approve', 'Execute']) {
+      expect(has(html, label)).toBe(true)
+    }
+
+    // Review navigation is a second, independent layer.
+    expect(has(html, 'Analysis review')).toBe(true)
+    expect(has(html, '01 / 05')).toBe(true)
+    for (const label of ['API spec', 'Understanding', 'Dependencies', 'Potential risks', 'Agent actions']) {
+      expect(has(html, label)).toBe(true)
+    }
+    expect(has(html, 'Go to test plan review')).toBe(false)
+    expect(has(html, 'Next')).toBe(true)
+
+    // The lab ends with a compact handoff, not the full plan page.
+    expect(has(html, 'Test plan ready')).toBe(true)
+    expect(has(html, 'View test plan')).toBe(true)
+    expect(has(html, 'Regenerate plan')).toBe(true)
+    expect(has(html, 'Scenarios')).toBe(false)
+    expect(has(html, 'Assertions')).toBe(false)
+    expect(has(html, 'Delete plan')).toBe(false)
+    expect(buttonWith(html, 'Approve')).toBe('')
+    expect(buttonWith(html, 'Reject')).toBe('')
+    expect(buttonWith(html, 'Run test')).toBe('')
+  })
+
+  it('keeps the generation action when analysis exists without a plan', async () => {
+    const agent = await loadAndAnalyse()
+    const planId = agent.activePlan?.id ?? ''
+    expect(planId).not.toBe('')
+    expect(await agent.deletePlan('prj_orders', planId)).toBe(true)
+
+    const html = await render()
+    expect(has(html, 'Generate test plan')).toBe(true)
+    expect(has(html, 'Go to test plans')).toBe(true)
+    expect(has(html, 'View test plan')).toBe(false)
+    expect(has(html, 'Test plan ready')).toBe(false)
+  })
+})
+
+describe('the plan handoff in the rendered page', () => {
   it('offers regeneration once a plan exists', async () => {
     const agent = useAgentStore()
 
@@ -176,33 +229,19 @@ describe('the approval boundary in the rendered page', () => {
     const html = await render()
     expect(has(html, 'Regenerate plan')).toBe(true)
     expect(has(html, 'Version 1')).toBe(true)
+    expect(has(html, 'View test plan')).toBe(true)
   })
 
-  it('keeps Run disabled until the plan is approved', async () => {
-    const agent = await loadAndAnalyse()
-    await agent.generatePlan()
+  it('does not expose plan approval or execution controls in the lab', async () => {
+    await loadAndAnalyse()
+    const html = await render()
 
-    const draft = await render()
-    expect(has(draft, 'Draft')).toBe(true)
-    expect(isDisabled(buttonWith(draft, 'Run test'))).toBe(true)
-    expect(has(draft, 'has to be approved before it can run')).toBe(true)
-
-    const planId = agent.activePlan?.id ?? ''
-    agent.startReview(planId)
-    expect(has(await render(), 'In review')).toBe(true)
-    expect(isDisabled(buttonWith(await render(), 'Run test'))).toBe(true)
-
-    agent.rejectPlan(planId, 'Missing refund coverage.')
-    const rejected = await render()
-    expect(has(rejected, 'Rejected')).toBe(true)
-    expect(has(rejected, 'Missing refund coverage.')).toBe(true)
-    expect(isDisabled(buttonWith(rejected, 'Run test'))).toBe(true)
-
-    agent.approvePlan(planId)
-    const approved = await render()
-    expect(has(approved, 'Approved')).toBe(true)
-    expect(isDisabled(buttonWith(approved, 'Run test'))).toBe(false)
-    expect(has(approved, 'has to be approved before it can run')).toBe(false)
+    expect(has(html, 'Test plan ready')).toBe(true)
+    expect(buttonWith(html, 'Approve')).toBe('')
+    expect(buttonWith(html, 'Reject')).toBe('')
+    expect(buttonWith(html, 'Run test')).toBe('')
+    expect(has(html, 'has to be approved before it can run')).toBe(false)
+    expect(has(html, 'Scenarios')).toBe(false)
   })
 })
 
@@ -247,6 +286,11 @@ describe('locale switching', () => {
     const html = await render()
 
     expect(has(html, 'AI 测试实验室')).toBe(true)
+    expect(has(html, '分析结果审阅')).toBe(true)
+    expect(has(html, '测试计划已生成')).toBe(true)
+    expect(has(html, '查看测试计划')).toBe(true)
+    expect(has(html, '01 / 05')).toBe(true)
+    expect(has(html, 'Agent 动作')).toBe(true)
     expect(has(html, 'API 理解结果')).toBe(true)
     expect(has(html, '个接口需要认证')).toBe(true)
     expect(has(html, '就无法调用')).toBe(true)

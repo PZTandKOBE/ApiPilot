@@ -32,7 +32,11 @@ import type {
   SpecSource,
   TestPlan,
 } from '@/types/agent'
-import { AGENT_TASK_STATUSES, type AgentTaskStatus } from '@/types/agent'
+import {
+  AGENT_TASK_STATUSES,
+  type AgentTaskStatus,
+  type AgentTaskSummary,
+} from '@/types/agent'
 import { createHttpAgentService } from './api/agent'
 import { createMockAgentService } from './mock/agent'
 
@@ -158,6 +162,24 @@ export interface AgentService {
   getTask(taskId: string): Promise<AgentTaskResult>
 
   /**
+   * The validated understanding an existing task's audit recorded.
+   *
+   * The ordinary task response does not carry an understanding when it is read
+   * back, but the audit record is the server's existing durable copy of the
+   * analysis. This is what lets the lab restore the real review after a reload;
+   * it is never a client-side reconstruction.
+   */
+  getTaskAudit(taskId: string): Promise<ApiUnderstanding | null>
+
+  /**
+   * The project's most recent tasks, newest first.
+   *
+   * The list carries the persisted activity record: prompt, status and
+   * timestamps. It intentionally omits the plan tree and understanding.
+   */
+  listTasks(projectId: string, limit?: number): Promise<readonly AgentTaskSummary[]>
+
+  /**
    * Every live plan version in a project, read from the server.
    *
    * The plan list is server-backed so version history survives a reload and a
@@ -165,6 +187,15 @@ export interface AgentService {
    * choices and merges them over the server's draft state.
    */
   listPlans(projectId: string): Promise<readonly TestPlan[]>
+
+  /**
+   * Retire one plan series for a project.
+   *
+   * The backend soft-deletes every live version in the document's series and
+   * preserves run history and PDF reports.  The caller removes the matching
+   * local versions once this resolves.
+   */
+  deletePlan(projectId: string, planId: string): Promise<void>
 }
 
 /** Which implementation the console gets. */

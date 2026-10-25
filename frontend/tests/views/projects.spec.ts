@@ -29,8 +29,8 @@ import { installStorage, removeStorage } from '../support/storage'
  *
  * The chain is real end to end: the form calls the shipped store action, which
  * calls the shipped service, which goes through the shipped HTTP layer with
- * \`fetch\` stubbed at that boundary.  Readiness is not stubbed either — every
- * case here lets the action reach \`requireReadyProjectId()\` for real.
+ * \`fetch\` stubbed at that boundary. Readiness is not stubbed either — every
+ * case here reaches the shipped initialize() and its ready-state check.
  *
  * The interactive half is asserted at the seam rather than through synthetic DOM
  * events: the suite runs in the \`node\` environment (see vitest.config.ts, which
@@ -206,11 +206,13 @@ describe('the page offers a way to create a project', () => {
     setActivePinia(pinia)
     useProjectStore().projects = [EXISTING_PROJECT] as never
 
-    const text = textOf(await renderPage(pinia))
+    const html = await renderPage(pinia)
+    const text = textOf(html)
 
     expect(text).toContain('New project')
     // The list is still the list: the entry is added, nothing is replaced.
     expect(text).toContain('Existing API')
+    expect(html).toContain('aria-label="Delete project"')
   })
 
   it('still offers it when there is nothing to list', async () => {

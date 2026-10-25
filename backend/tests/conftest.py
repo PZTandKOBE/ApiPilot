@@ -68,8 +68,14 @@ import pytest  # noqa: E402
 from sqlalchemy import delete, select, text  # noqa: E402
 
 from backend.db import database  # noqa: E402
-from backend.db.models.agent import TestPlan  # noqa: E402
-from backend.db.models.project import ApiSpec, Project  # noqa: E402
+from backend.db.models.agent import AgentTask, TestPlan  # noqa: E402
+from backend.db.models.project import (  # noqa: E402
+    ApiEndpoint,
+    ApiSpec,
+    Environment,
+    EnvironmentVariable,
+    Project,
+)
 from backend.db.models.result import RunEvent, TestRun  # noqa: E402
 from backend.db.models.user import GuestSession  # noqa: E402
 
@@ -176,17 +182,85 @@ class _Fixtures:
         self.session.add(row)
         return await self._keep(Project, row)
 
-    async def spec(self, project_id: uuid.UUID) -> uuid.UUID:
+    async def spec(
+        self,
+        project_id: uuid.UUID,
+        *,
+        name: str = "C4 scratch spec",
+        slug: str | None = None,
+        filename: str | None = None,
+        created_at: datetime | None = None,
+    ) -> uuid.UUID:
         row = ApiSpec(
             project_id=project_id,
-            name="C4 scratch spec",
-            slug=f"c4spec_{self._tag}",
+            name=name,
+            slug=slug or f"c4spec_{self._tag}",
             spec_type="openapi-3",
             content_format="json",
+            filename=filename,
             content='{"openapi": "3.0.0", "info": {"title": "c4", "version": "1"}}',
         )
+        if created_at is not None:
+            row.created_at = created_at
+            row.updated_at = created_at
         self.session.add(row)
         return await self._keep(ApiSpec, row)
+
+    async def environment(
+        self,
+        project_id: uuid.UUID,
+        *,
+        name: str = "C4 scratch environment",
+        kind: str = "development",
+        base_url: str = "http://127.0.0.1:8000",
+        public_id: str | None = None,
+        is_default: bool = False,
+    ) -> uuid.UUID:
+        row = Environment(
+            project_id=project_id,
+            public_id=public_id or f"c4env_{self._tag}_{uuid.uuid4().hex[:8]}",
+            name=name,
+            kind=kind,
+            base_url=base_url,
+            is_default=is_default,
+        )
+        self.session.add(row)
+        return await self._keep(Environment, row)
+
+    async def environment_variable(
+        self,
+        environment_id: uuid.UUID,
+        *,
+        key: str = "token",
+        value: str = "scratch-secret",
+        is_secret: bool = True,
+    ) -> uuid.UUID:
+        row = EnvironmentVariable(
+            environment_id=environment_id,
+            key=key,
+            value_encrypted=value,
+            is_secret=is_secret,
+            enabled=True,
+        )
+        self.session.add(row)
+        return await self._keep(EnvironmentVariable, row)
+
+    async def endpoint(
+        self,
+        spec_id: uuid.UUID,
+        *,
+        public_id: str | None = None,
+        method: str = "GET",
+        path: str = "/items",
+    ) -> uuid.UUID:
+        row = ApiEndpoint(
+            spec_id=spec_id,
+            public_id=public_id or f"ep_c4_{self._tag}_{uuid.uuid4().hex[:8]}",
+            method=method,
+            path=path,
+        )
+        self.session.add(row)
+        return await self._keep(ApiEndpoint, row)
 
     async def plan(self, project_id: uuid.UUID, spec_id: uuid.UUID) -> uuid.UUID:
         row = TestPlan(
@@ -202,6 +276,34 @@ class _Fixtures:
         )
         self.session.add(row)
         return await self._keep(TestPlan, row)
+
+    async def agent_task(
+        self,
+        project_id: uuid.UUID,
+        spec_id: uuid.UUID,
+        *,
+        status: str = "completed",
+        prompt: str = "C4 scratch task",
+        created_at: datetime | None = None,
+        updated_at: datetime | None = None,
+    ) -> uuid.UUID:
+        """A persisted agent task for list/order tests.
+
+        created_at is assigned explicitly when supplied. TimestampMixin
+        otherwise relies on the database clock, which would make ordering
+        assertions depend on how fast the fixture loop happened to run.
+        """
+        row = AgentTask(
+            project_id=project_id,
+            spec_id=spec_id,
+            environment_id=None,
+            prompt=prompt,
+            status=status,
+            created_at=created_at or datetime.now(timezone.utc),
+            updated_at=updated_at or created_at or datetime.now(timezone.utc),
+        )
+        self.session.add(row)
+        return await self._keep(AgentTask, row)
 
     # -- test_runs --------------------------------------------------------- #
 

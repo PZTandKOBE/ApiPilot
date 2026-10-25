@@ -1,44 +1,55 @@
-"""The smallest project bootstrap the console needs: list mine, create one.
+"""Project, environment and project-spec reads and writes.
 
-Phase 8.5 Step 3.  Two operations, both scoped to the verified guest that asks:
+Everything is scoped to the verified guest: list by the owner column rather than
+filtering later, create with the identity the server verified, and update only
+after the route dependency has proved project access.
 
-* list the projects this guest owns -- by `guest_session_id`, never by "all
-  projects, filtered later", because a filter the client applies is not a filter;
-* create a project whose owner is **the identity the server verified**, never a
-  value from the request body.
+**A project starts with one environment.**  A run needs an environment id, so
+project creation also creates a default environment with the base URL the caller
+supplied (or a loopback default), and returns it in the listing.  Additional
+environments can be created later; they are never default, start with no
+variables, and do not share rows with the existing ones.  Environment edits are
+limited to name, kind and base URL; variables and auth rows stay separate.
 
-**Why this exists at all.**  The console's project ids came from a mock list, and
-the backend has no project endpoint: a guest could authenticate and then have
-nowhere to go.  This is the missing link, deliberately no bigger than that -- no
-rename, no delete, no membership, no environment management.
-
-**A project arrives with one environment.**  A run needs an environment id, and
-there is no environment API; without one, an authenticated console could create a
-project and still not run anything.  The default environment is created in the
-same transaction with the base URL the caller supplied (or a loopback default),
-and it is returned by the listing so the console can use it.  Managing further
-environments is a later step, and this is the smallest honest substitute.
+**The spec read is a summary.**  The overview only needs the latest document's
+name, type, endpoint count and timestamps.  The document content and parsed tree
+remain out of this surface.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.db.models.project import ApiSpec, Environment, Project
+from backend.api.errors import AppError
+from backend.db.models.project import ApiEndpoint, ApiSpec, Environment, Project
 from backend.db.models.user import GuestSession
 from backend.schemas.project import (
-    EnvironmentVariableResponse,
     ProjectEnvironmentResponse,
     ProjectResponse,
+    ProjectSpecResponse,
 )
-from backend.services.spec_identity import slugify
+from backend.services.spec_identity import slugify, spec_id_for
 
-__all__ = ["create_for_guest", "list_for_guest"]
+__all__ = [
+    "create_environment",
+    "create_for_guest",
+    "delete_project",
+    "latest_spec",
+    "list_for_guest",
+    "update_environment",
+    "update_name",
+]
+
+PROJECT_NOT_FOUND_CODE = "project-not-found"
+ENVIRONMENT_NOT_FOUND_CODE = "environment-not-found"
+ENVIRONMENT_CONFLICT_CODE = "environment-name-conflict"
+_UPDATE_FAILED_KEY = "console.overview.saveFailed"
+_NOT_FOUND_KEY = "console.runs.errors.notFound"
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +69,7 @@ _NAME_LIMIT = 200
 """The projects.name column's width."""
 
 _SUFFIX_LENGTH = 8
+_ENVIRONMENT_SLUG_LIMIT = 40
 
 
 def project_public_id(name: str) -> str:
@@ -86,6 +98,26 @@ async def _spec_name(session: AsyncSession, project_id: uuid.UUID) -> str | None
         return None
 
     return row[0] or row[1]
+
+
+def _project_not_found(project_id: str) -> AppError:
+    return AppError(
+        404,
+        code=PROJECT_NOT_FOUND_CODE,
+        message_key=_NOT_FOUND_KEY,
+        details={"projectId": project_id},
+    )
+
+
+async def _lookup_project(session: AsyncSession, public_id: str) -> Project:
+    project = (
+        await session.execute(select(Project).where(Project.public_id == public_id))
+    ).scalar_one_or_none()
+
+    if project is None:
+        raise _project_not_found(public_id)
+
+    return project
 
 
 async def _environments(
@@ -141,6 +173,220 @@ async def list_for_guest(session: AsyncSession, *, guest: GuestSession) -> list[
     )
 
     return [await _response(session, project) for project in found.scalars().all()]
+
+
+async def delete_project(session: AsyncSession, *, project_id: str) -> None:
+    """Permanently delete one project and everything that belongs to it.
+
+    The database schema already owns the deletion graph: every project-scoped
+    table has an ON DELETE CASCADE / SET NULL relationship to projects, and the
+    few NO ACTION references are deferred to the end of the statement so the
+    cascading rows disappear together.  Reports are stored as bytes in
+    run_reports, so the cascade removes the PDF payload and metadata with the
+    project; there is no filesystem path to clean up.
+
+    The owner row (User / GuestSession) is deliberately outside that graph: it
+    is identity, not project data.
+    """
+    project = await _lookup_project(session, project_id)
+
+    await session.delete(project)
+    await session.flush()
+
+    logger.info("deleted project %s", project.public_id)
+
+
+async def update_name(
+    session: AsyncSession, *, project_id: str, name: str
+) -> ProjectResponse:
+    """Rename one project and return the fresh aggregate.
+
+    Authorization is the route dependency's job; this function is deliberately
+    only the data change. The timestamp is assigned explicitly instead of
+    relying on onupdate so the response can be built from the same row in the
+    request's transaction.
+    """
+    project = await _lookup_project(session, project_id)
+    project.name = name.strip()
+    project.updated_at = datetime.now(timezone.utc)
+
+    await session.flush()
+
+    return await _response(session, project)
+
+
+def environment_public_id(name: str) -> str:
+    """A readable, project-scoped public id for a new environment.
+
+    The project-scoping unique constraint is what makes the id unique; the
+    suffix keeps two environments with the same name from colliding during the
+    window before the name pre-check would reject the second one.
+    """
+    slug = slugify(name)[:_ENVIRONMENT_SLUG_LIMIT] or "environment"
+
+    return f"{ENVIRONMENT_PREFIX}_{slug}_{uuid.uuid4().hex[:_SUFFIX_LENGTH]}"
+
+
+async def create_environment(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    name: str,
+    kind: str,
+    base_url: str,
+) -> ProjectResponse:
+    """Create one additional environment under an existing project.
+
+    The new row is never the default: projects created by this service already
+    have their default environment, and this operation must not move that
+    pointer or change which environment an existing API request uses.  It also
+    starts with no variables; nothing is copied from a sibling environment.
+    """
+    project = await _lookup_project(session, project_id)
+    cleaned_name = name.strip()
+
+    duplicate = (
+        await session.execute(
+            select(Environment.id).where(
+                Environment.project_id == project.id,
+                Environment.name == cleaned_name,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if duplicate is not None:
+        raise AppError(
+            409,
+            code=ENVIRONMENT_CONFLICT_CODE,
+            message_key=_UPDATE_FAILED_KEY,
+            details={"name": cleaned_name},
+        )
+
+    environment = Environment(
+        project_id=project.id,
+        public_id=environment_public_id(cleaned_name),
+        name=cleaned_name,
+        kind=kind,
+        base_url=base_url.strip(),
+        is_default=False,
+    )
+    session.add(environment)
+    project.updated_at = datetime.now(timezone.utc)
+
+    await session.flush()
+
+    logger.info(
+        "created environment %s for project %s",
+        environment.public_id,
+        project.public_id,
+    )
+
+    return await _response(session, project)
+
+
+async def update_environment(
+    session: AsyncSession,
+    *,
+    project_id: str,
+    environment_id: str,
+    name: str,
+    kind: str,
+    base_url: str,
+) -> ProjectResponse:
+    """Update the editable fields of one environment in one project.
+
+    The lookup is scoped by project id first, so an environment public id from a
+    different project is a 404 rather than a row that can be updated. Variables,
+    auth rows and the default flag are not touched.
+    """
+    project = await _lookup_project(session, project_id)
+
+    environment = (
+        await session.execute(
+            select(Environment).where(
+                Environment.project_id == project.id,
+                Environment.public_id == environment_id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if environment is None:
+        raise AppError(
+            404,
+            code=ENVIRONMENT_NOT_FOUND_CODE,
+            message_key=_NOT_FOUND_KEY,
+            details={"environmentId": environment_id},
+        )
+
+    duplicate = (
+        await session.execute(
+            select(Environment.id).where(
+                Environment.project_id == project.id,
+                Environment.name == name.strip(),
+                Environment.id != environment.id,
+            )
+        )
+    ).scalar_one_or_none()
+
+    if duplicate is not None:
+        raise AppError(
+            409,
+            code=ENVIRONMENT_CONFLICT_CODE,
+            message_key=_UPDATE_FAILED_KEY,
+            details={"environmentId": environment_id},
+        )
+
+    environment.name = name.strip()
+    environment.kind = kind
+    environment.base_url = base_url.strip()
+    project.updated_at = datetime.now(timezone.utc)
+
+    await session.flush()
+
+    return await _response(session, project)
+
+
+async def latest_spec(
+    session: AsyncSession, *, project_id: str
+) -> ProjectSpecResponse | None:
+    """The project's most recently persisted spec, or None when it has none.
+
+    api_specs is the source of truth here; projects has no spec name column of
+    its own. The endpoint count is a real COUNT over the document's parsed
+    endpoints, not a client-side guess.
+    """
+    project = await _lookup_project(session, project_id)
+
+    spec = (
+        await session.execute(
+            select(ApiSpec)
+            .where(ApiSpec.project_id == project.id)
+            .order_by(ApiSpec.created_at.desc(), ApiSpec.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if spec is None:
+        return None
+
+    endpoint_count = (
+        await session.scalar(
+            select(func.count()).select_from(ApiEndpoint).where(ApiEndpoint.spec_id == spec.id)
+        )
+    ) or 0
+
+    return ProjectSpecResponse(
+        id=spec_id_for(spec.slug),
+        name=spec.name,
+        filename=spec.filename,
+        spec_type=spec.spec_type,
+        content_format=spec.content_format,
+        version=spec.version,
+        source=spec.source,
+        endpoint_count=endpoint_count,
+        created_at=spec.created_at,
+        updated_at=spec.updated_at,
+    )
 
 
 async def create_for_guest(

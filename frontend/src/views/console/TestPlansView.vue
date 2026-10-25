@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { MagicStick, Tickets } from '@element-plus/icons-vue'
+import { Delete, MagicStick, Tickets } from '@element-plus/icons-vue'
 import { ElAlert, ElButton, ElIcon } from 'element-plus'
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
+import PlanDeleteDialog from '@/components/console/Agent/PlanDeleteDialog.vue'
 import PlanRiskTag from '@/components/console/Agent/PlanRiskTag.vue'
 import PlanStatusTag from '@/components/console/Agent/PlanStatusTag.vue'
 import ConsoleEmptyState from '@/components/console/ConsoleEmptyState.vue'
@@ -54,6 +55,14 @@ const detailTarget = (plan: TestPlan) => ({
   name: 'console-project-plan-detail',
   params: { planId: plan.id },
 })
+
+const deleteTarget = ref<TestPlan | null>(null)
+const deleteOpen = ref(false)
+
+const openDelete = (plan: TestPlan): void => {
+  deleteTarget.value = plan
+  deleteOpen.value = true
+}
 </script>
 
 <template>
@@ -103,10 +112,13 @@ const detailTarget = (plan: TestPlan) => ({
 
     <ul v-else class="flex flex-col gap-2.5">
       <li v-for="plan in plans" :key="plan.id">
-        <RouterLink
-          :to="detailTarget(plan)"
-          class="console-panel block p-4 transition-colors duration-150 hover:border-[var(--console-border-strong)]"
+        <div
+          class="console-panel flex items-start gap-2 p-4 transition-colors duration-150 hover:border-[var(--console-border-strong)]"
         >
+          <RouterLink
+            :to="detailTarget(plan)"
+            class="block min-w-0 flex-1"
+          >
           <div class="flex flex-wrap items-start justify-between gap-3">
             <div class="min-w-0">
               <h2
@@ -185,8 +197,28 @@ const detailTarget = (plan: TestPlan) => ({
               </dd>
             </div>
           </dl>
-        </RouterLink>
+          </RouterLink>
+
+          <ElButton
+            link
+            type="danger"
+            size="small"
+            class="shrink-0"
+            :aria-label="t('console.plans.delete')"
+            :title="t('console.plans.delete')"
+            @click="openDelete(plan)"
+          >
+            <ElIcon class="mr-1"><Delete /></ElIcon>
+            <span class="hidden sm:inline">{{ t('console.plans.delete') }}</span>
+          </ElButton>
+        </div>
       </li>
     </ul>
+
+    <PlanDeleteDialog
+      v-if="deleteTarget !== null"
+      v-model="deleteOpen"
+      :plan="deleteTarget"
+    />
   </div>
 </template>

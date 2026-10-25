@@ -60,7 +60,7 @@ const githubAvailable = hasGithubUrl()
           class="inline-flex cursor-not-allowed items-center gap-1.5 rounded-full border border-[var(--glass-border)] bg-white/[0.02] px-2.5 py-1.5 text-[11px] font-medium text-[var(--text-muted)] backdrop-blur-md"
           role="link"
           aria-disabled="true"
-          :title="`${t('nav.github')}: ${GITHUB_REPO} — URL not configured yet`"
+          :title="`${t('nav.github')}: ${GITHUB_REPO} - URL not configured yet`"
         >
           <GithubIcon :size="14" />
           <span>{{ t('nav.github') }}</span>

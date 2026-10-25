@@ -114,7 +114,7 @@ const reconciledProjectId = computed<string | null>(() => {
   if (id === null) return null
   if (projectStore.projectById(id) !== null) return null
 
-  return projectStore.activeProject.id
+  return projectStore.activeProject?.id ?? null
 })
 
 /**
@@ -167,6 +167,16 @@ const bootstrap = async (): Promise<void> => {
   await projectStore.initialize()
 
   if (projectStore.status !== 'ready') return
+
+  // No project was invented on the way in. If the address bar still points at
+  // a project-scoped page, there is no real destination for it; land on the
+  // project index, which is the existing empty state and creation entry point.
+  if (projectStore.projects.length === 0) {
+    if (routeProjectParam.value !== null) {
+      await router.replace({ name: 'console-projects' })
+    }
+    return
+  }
 
   const projectId = reconciledProjectId.value
   if (projectId === null) return

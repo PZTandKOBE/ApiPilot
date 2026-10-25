@@ -39,14 +39,15 @@ import logging
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import select, text
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.errors import AppError
-from backend.db.models.agent import AgentTask
-from backend.db.models.project import ApiSpec
+from backend.db.models.agent import AgentTask, TestPlan
+from backend.db.models.project import ApiSpec, Project
 from backend.schemas.agent import (
     AgentAssertionResponse,
     AgentAuthenticationResponse,
@@ -61,6 +62,7 @@ from backend.schemas.agent import (
     AgentStepResponse,
     AgentTaskCreateRequest,
     AgentTaskResponse,
+    AgentTaskSummaryResponse,
     AgentUnderstandingResponse,
 )
 from backend.schemas.agent_audit import (
@@ -79,7 +81,15 @@ from backend.services.runs import (
 )
 from backend.services.spec_identity import derive_spec_identity, probe_document, spec_id_for
 
-__all__ = ["create_task", "get_task", "list_plans", "process_task", "start_task"]
+__all__ = [
+    "create_task",
+    "delete_plan",
+    "get_task",
+    "list_plans",
+    "list_tasks",
+    "process_task",
+    "start_task",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -754,7 +764,8 @@ async def _find_plan(session: AsyncSession, project_id: uuid.UUID, slug: str) ->
         await session.execute(
             text(
                 "SELECT public_id FROM test_plans "
-                "WHERE project_id = :project AND public_id = :public_id"
+                "WHERE project_id = :project AND public_id = :public_id "
+                "AND deleted_at IS NULL"
             ),
             {"project": project_id, "public_id": f"plan_{slug}"},
         )
@@ -838,6 +849,7 @@ _PLAN_ROW = """
               AND versions.deleted_at IS NULL) AS current_version
     FROM test_plans
     WHERE test_plans.agent_task_id = :task
+      AND test_plans.deleted_at IS NULL
 """
 
 _PLAN_SCENARIOS = """
@@ -944,6 +956,59 @@ def _config_value(config: Any, key: str) -> str | None:
     value = config.get(key)
 
     return value if isinstance(value, str) and value != "" else None
+
+
+async def delete_plan(session: AsyncSession, *, project: Project, plan_id: str) -> None:
+    """Retire one plan series without touching the history it produced.
+
+    The schema's existing test_plans.deleted_at column is the soft-delete
+    contract: test runs keep a NO ACTION foreign key to the plan row and a
+    frozen plan_name snapshot, so a hard delete would either be refused or make
+    historical runs unreadable. This marks every live version of the document's
+    plan series deleted in one transaction. Runs, run snapshots and persisted
+    PDF reports are deliberately untouched.
+    """
+    found = (
+        await session.execute(
+            select(TestPlan).where(
+                TestPlan.project_id == project.id,
+                TestPlan.public_id == plan_id,
+                TestPlan.deleted_at.is_(None),
+            )
+        )
+    ).scalar_one_or_none()
+
+    if found is None:
+        raise AppError(
+            404,
+            code="plan-not-found",
+            message_key="console.plans.notFound",
+            params={"planId": plan_id},
+        )
+
+    # Serialise with regeneration's version allocation. A generation that wins
+    # the lock creates a row this same soft delete then includes; a generation
+    # that starts afterwards sees no live plan and can create a fresh one.
+    await session.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+        {"key": f"plan-version:{project.id}:{found.spec_id}"},
+    )
+
+    await session.execute(
+        update(TestPlan)
+        .where(
+            TestPlan.project_id == project.id,
+            TestPlan.spec_id == found.spec_id,
+            TestPlan.deleted_at.is_(None),
+        )
+        .values(deleted_at=datetime.now(timezone.utc))
+    )
+
+    logger.info(
+        "soft-deleted plan series %s for project %s",
+        found.spec_id,
+        project.public_id,
+    )
 
 
 async def _plan_response(
@@ -1099,6 +1164,45 @@ async def list_plans(
         )
 
     return plans
+
+
+async def list_tasks(
+    session: AsyncSession, *, project_id: str, limit: int = 3
+) -> list[AgentTaskSummaryResponse]:
+    """The project's recent agent tasks, newest first.
+
+    ``agent_tasks`` is the durable record of what the agent was asked to do and
+    where it got to.  The list reads only that row: no plan tree, no audit row
+    and no document, so a task that failed before producing a plan is still
+    visible with its real status.
+
+    Ordering is by creation time, then by the row UUID as a stable tiebreaker.
+    Both columns live on ``agent_tasks``; no client-supplied sort is needed for
+    a dashboard preview.  The route bounds ``limit`` before this function is
+    called.
+    """
+    project = await _lookup_project(session, project_id)
+
+    tasks = (
+        await session.execute(
+            select(AgentTask)
+            .where(AgentTask.project_id == project.id)
+            .order_by(AgentTask.created_at.desc(), AgentTask.id.desc())
+            .limit(limit)
+        )
+    ).scalars()
+
+    return [
+        AgentTaskSummaryResponse(
+            id=str(task.id),
+            project_id=project_id,
+            prompt=task.prompt,
+            status=task.status,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+        )
+        for task in tasks
+    ]
 
 
 def _understanding_response(

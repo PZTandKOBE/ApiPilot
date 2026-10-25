@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { Clock, Document, Grid } from '@element-plus/icons-vue'
-import { ElIcon } from 'element-plus'
+import { Clock, Delete, Document, Grid } from '@element-plus/icons-vue'
+import { ElButton, ElIcon } from 'element-plus'
 import { computed } from 'vue'
 
+import { useNow } from '@/composables/useNow'
 import { useI18n } from '@/i18n'
 import { useProjectStore } from '@/stores/project'
 import { formatRelativeTime } from '@/utils/time'
@@ -22,8 +23,11 @@ const props = withDefaults(
   { variant: 'grid' },
 )
 
+const emit = defineEmits<{ readonly delete: [] }>()
+
 const { t, locale } = useI18n()
 const store = useProjectStore()
+const now = useNow()
 
 const isActive = computed(() => store.activeProjectId === props.project.id)
 
@@ -32,11 +36,16 @@ const to = computed(() => ({
   params: { projectId: props.project.id },
 }))
 
-const updatedLabel = computed(() =>
-  t('console.project.updated', {
-    time: formatRelativeTime(props.project.updatedAt, locale.value),
-  }),
-)
+const updatedLabel = computed(() => {
+  const relative = formatRelativeTime(props.project.updatedAt, locale.value, {
+    now: now.value,
+    justNow: t('console.common.justNow'),
+  })
+
+  return t('console.project.updated', {
+    time: relative === '' ? t('console.common.unknown') : relative,
+  })
+})
 
 const specLabel = computed(
   () => props.project.specName ?? t('console.overview.noSpec'),
@@ -46,14 +55,22 @@ const environmentCount = computed(() => props.project.environments.length)
 </script>
 
 <template>
-  <RouterLink
-    :to="to"
-    class="group console-panel block transition-colors duration-150 hover:border-[var(--console-border-strong)]"
+  <div
+    class="group console-panel relative block transition-colors duration-150 hover:border-[var(--console-border-strong)]"
     :class="[
-      variant === 'grid' ? 'flex h-full flex-col gap-3 p-4' : 'flex items-center gap-4 px-3.5 py-2.5',
+      variant === 'grid' ? 'h-full' : '',
       isActive ? 'border-[var(--console-border-strong)]' : '',
     ]"
   >
+    <RouterLink
+      :to="to"
+      class="flex min-w-0"
+      :class="
+        variant === 'grid'
+          ? 'h-full flex-col gap-3 p-4 pr-10'
+          : 'items-center gap-4 px-3.5 py-2.5 pr-10'
+      "
+    >
     <div class="min-w-0 flex-1">
       <div class="flex items-center gap-2">
         <h3
@@ -96,5 +113,19 @@ const environmentCount = computed(() => props.project.environments.length)
         <span>{{ updatedLabel }}</span>
       </span>
     </div>
-  </RouterLink>
+    </RouterLink>
+
+    <ElButton
+      link
+      type="danger"
+      size="small"
+      class="absolute right-1.5"
+      :class="variant === 'row' ? 'top-1/2 -translate-y-1/2' : 'top-1.5'"
+      :aria-label="t('console.project.delete')"
+      :title="t('console.project.delete')"
+      @click.stop="emit('delete')"
+    >
+      <ElIcon :size="14"><Delete /></ElIcon>
+    </ElButton>
+  </div>
 </template>

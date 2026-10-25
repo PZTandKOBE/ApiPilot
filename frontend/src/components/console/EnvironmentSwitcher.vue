@@ -20,12 +20,14 @@ const store = useProjectStore()
 
 const KIND_COLOR: Readonly<Record<EnvironmentKind, string>> = {
   development: 'var(--accent)',
+  testing: 'var(--status-pass)',
   staging: 'var(--status-warn)',
   production: 'var(--status-fail)',
 }
 
 const KIND_LABEL_KEY: Readonly<Record<EnvironmentKind, string>> = {
   development: 'console.environment.development',
+  testing: 'console.environment.testing',
   staging: 'console.environment.staging',
   production: 'console.environment.production',
 }

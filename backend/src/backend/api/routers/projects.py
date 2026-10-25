@@ -1,34 +1,44 @@
-"""Project endpoints: the bootstrap a guest needs before anything else works.
+"""Project endpoints: the project, its environments and its current spec.
 
-Phase 8.5 Step 3.  Three routes, all authenticated:
+All routes are authenticated:
 
 * `GET /api/projects` -- the projects this guest owns.
 * `POST /api/projects` -- create one, owned by the identity the server verified.
+* `PATCH /api/projects/{project_id}` -- rename a project.
+* `POST /api/projects/{project_id}/environments` -- create another environment
+  in the project.
+* `PATCH /api/projects/{project_id}/environments/{environment_id}` -- update an
+  environment's name, kind and base URL.
+* `GET /api/projects/{project_id}/spec` -- read the latest persisted spec.
+* `DELETE /api/projects/{project_id}` -- permanently delete the project and its
+  project-owned data; identity rows survive.
 * `POST /api/projects/{project_id}/proxy` -- send one manual API request to the
   API the user is testing, on behalf of the project's owner.
 
-**Why both are authenticated and neither takes an owner.**  A project is the unit
-of ownership every other resource hangs from, so this is where ownership is
-decided: listing filters on `guest_session_id` in the query, and creating sets
-it from `CurrentGuestSessionDep`.  A body cannot name an owner -- the request
-schema forbids unknown fields, so `guestSessionId` or `userId` is a 422
-rather than a field that is politely ignored.
-
-**What is deliberately absent.**  No read-one, no update, no delete, no
-membership, no environment management.  This is the smallest thing that lets an
-authenticated console reach its own data, not a project management system.
+**Why the auth is shared.**  A project is the unit of ownership every other
+resource hangs from. Listing and every project-scoped route read the owner from
+the verified identity; request bodies cannot name an owner, because the schemas
+forbid unknown fields.  Environment writes are scoped by project id first, so
+an environment id from another project is a 404 rather than a writable row.
 """
 
 from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Path, Request, status
+from fastapi import APIRouter, Depends, Path, Request, Response, status
 
 from backend.api.deps import CurrentGuestSessionDep, SessionDep
 from backend.api.errors import ERROR_RESPONSES
 from backend.db.models.user import GuestSession
-from backend.schemas.project import ProjectCreateRequest, ProjectResponse
+from backend.schemas.project import (
+    EnvironmentCreateRequest,
+    EnvironmentUpdateRequest,
+    ProjectCreateRequest,
+    ProjectResponse,
+    ProjectSpecResponse,
+    ProjectUpdateRequest,
+)
 from backend.schemas.proxy import ProxyRequest, ProxyResponse
 from backend.services import api_proxy_route, guest_limits, projects
 from backend.services.guest_access import require_guest_project_access
@@ -77,6 +87,11 @@ async def _require_project_access(
 
 
 ProjectOwnerDep = Annotated[GuestSession, Depends(_require_project_access)]
+
+EnvironmentId = Annotated[
+    str,
+    Path(description="The environment's project-scoped public id, e.g. env_orders_staging."),
+]
 
 
 @router.get(
@@ -132,6 +147,140 @@ async def create_project(
     await session.commit()
 
     return created
+
+
+@router.patch(
+    "/projects/{project_id}",
+    response_model=ProjectResponse,
+    summary="Rename a project",
+    responses=ERROR_RESPONSES,
+)
+async def update_project(
+    project_id: ProjectId,
+    payload: ProjectUpdateRequest,
+    session: SessionDep,
+    owner: ProjectOwnerDep,
+) -> ProjectResponse:  # noqa: ARG001 - the dependency is the authorization
+    """Change the project's display name.
+
+    The project id in the path is authorized by ProjectOwnerDep before this
+    body runs.  Only the name is writable here; ownership, timestamps and
+    derived fields stay server-owned.
+    """
+    updated = await projects.update_name(session, project_id=project_id, name=payload.name)
+    await session.commit()
+
+    return updated
+
+
+@router.delete(
+    "/projects/{project_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a project and its project-owned data",
+    responses=ERROR_RESPONSES,
+)
+async def delete_project(
+    project_id: ProjectId,
+    session: SessionDep,
+    owner: ProjectOwnerDep,
+) -> Response:  # noqa: ARG001 - the dependency is the authorization
+    """Permanently delete this project and every row scoped to it.
+
+    The ownership dependency has already proved the caller may touch the
+    project. The database cascade removes environments, variables, specs,
+    endpoint rows, agent tasks and audits, plans/versions, runs and their
+    snapshots, and the PDF report bytes and metadata. The owner identity row is
+    not part of that graph and survives.
+    """
+    await projects.delete_project(session, project_id=project_id)
+    await session.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post(
+    "/projects/{project_id}/environments",
+    response_model=ProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create an environment in a project",
+    responses=ERROR_RESPONSES,
+)
+async def create_project_environment(
+    project_id: ProjectId,
+    payload: EnvironmentCreateRequest,
+    session: SessionDep,
+    owner: ProjectOwnerDep,
+) -> ProjectResponse:  # noqa: ARG001 - the dependency is the authorization
+    """Create another environment under this project.
+
+    The returned aggregate includes the new environment; the existing default
+    environment and every sibling row stay untouched.  New environments start
+    with no variables and are never marked as default, so creating one cannot
+    change the environment an existing API request uses.
+    """
+    updated = await projects.create_environment(
+        session,
+        project_id=project_id,
+        name=payload.name,
+        kind=payload.kind,
+        base_url=payload.base_url,
+    )
+    await session.commit()
+
+    return updated
+
+
+@router.patch(
+    "/projects/{project_id}/environments/{environment_id}",
+    response_model=ProjectResponse,
+    summary="Update an environment's basic fields",
+    responses=ERROR_RESPONSES,
+)
+async def update_project_environment(
+    project_id: ProjectId,
+    environment_id: EnvironmentId,
+    payload: EnvironmentUpdateRequest,
+    session: SessionDep,
+    owner: ProjectOwnerDep,
+) -> ProjectResponse:  # noqa: ARG001 - the dependency is the authorization
+    """Update the name, kind and base URL of an environment in this project.
+
+    The lookup is scoped by the project id in the path as well as the
+    environment id, so an environment id from another project is a 404.  The
+    route does not accept variables, auth rules or the default flag; those
+    remain untouched.
+    """
+    updated = await projects.update_environment(
+        session,
+        project_id=project_id,
+        environment_id=environment_id,
+        name=payload.name,
+        kind=payload.kind,
+        base_url=payload.base_url,
+    )
+    await session.commit()
+
+    return updated
+
+
+@router.get(
+    "/projects/{project_id}/spec",
+    response_model=ProjectSpecResponse | None,
+    summary="Read the project's current API specification",
+    responses=ERROR_RESPONSES,
+)
+async def get_project_spec(
+    project_id: ProjectId,
+    session: SessionDep,
+    owner: ProjectOwnerDep,
+) -> ProjectSpecResponse | None:  # noqa: ARG001 - the dependency is the authorization
+    """The latest persisted spec for this project, or null when it has none.
+
+    Null is a successful answer, not a 404: the overview needs to distinguish
+    "this project has no spec yet" from "the request failed".  The response
+    deliberately excludes the document content and the parsed endpoint tree.
+    """
+    return await projects.latest_spec(session, project_id=project_id)
 
 
 @router.post(

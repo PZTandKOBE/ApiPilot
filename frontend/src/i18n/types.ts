@@ -108,8 +108,9 @@ export interface MessageSchema {
   readonly hero: {
     /** Display title, one array entry per rendered SVG line. */
     readonly titleLines: readonly string[]
-    readonly subtitleLine1: string
-    readonly subtitleLine2: string
+    /** The readable value proposition under the display type. */
+    readonly headline: string
+    readonly support: string
     readonly tryUs: string
     readonly learnUs: string
     readonly badge: string

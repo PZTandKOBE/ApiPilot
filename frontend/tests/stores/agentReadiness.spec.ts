@@ -14,9 +14,9 @@ import { installProjectFixtures } from '../support/projects'
  * The agent store's project-readiness gate, under the *default* test
  * configuration.
  *
- * The real project initialisation — a backend list, a created first project, a
- * failed load — is covered in `agentReadiness.real.spec.ts`, which needs its own
- * config because vitest pins the switch that selects the real project store.
+ * The real project initialisation branches — a backend list, an empty list after
+ * deletion, a failed load — are covered through the real store in
+ * projectPersistence.spec.ts, which switches the project-service mode for itself.
  * What is left for this file is everything that does not depend on that switch:
  *
  * * the gate is on the path and uses the id it resolved (driven through the seam

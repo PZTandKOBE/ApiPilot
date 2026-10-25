@@ -337,6 +337,23 @@ describe('B. the address bar is reconciled with the loaded list', () => {
     expect(store.activeProjectId).toBe(SECOND_PROJECT_ID)
   })
 
+  it('lands on the project index when a project-scoped URL has no projects to show', async () => {
+    // The empty list is the state left after deleting the last project. The
+    // project id in the URL cannot be reconciled to anything, so the shell must
+    // not read a null active project or wait forever for a page that can never
+    // resolve.
+    const router = await createTestRouter('/console/projects/prj_deleted/ai-test')
+    const { app, store } = createApp(router, { projects: [] })
+
+    const html = await render(app, router)
+
+    expect(store.status).toBe('ready')
+    expect(store.projects).toEqual([])
+    expect(store.activeProject).toBeNull()
+    expect(router.currentRoute.value.fullPath).toBe('/console/projects')
+    expect(html).toContain('project-page')
+  })
+
   it('leaves a route that names no project alone', async () => {
     const list = await createTestRouter('/console/projects')
     const listApp = createApp(list, { projects: REAL_PROJECTS })

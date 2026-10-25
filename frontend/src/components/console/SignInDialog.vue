@@ -1,11 +1,11 @@
 <script setup lang="ts">
+import { User as UserIcon } from '@element-plus/icons-vue'
+import { ElButton, ElDialog, ElIcon } from 'element-plus'
 import { computed } from 'vue'
-import { ElButton, ElDialog } from 'element-plus'
 import { useRoute, useRouter } from 'vue-router'
 
 import GithubIcon from '@/components/common/GithubIcon.vue'
 import GoogleIcon from '@/components/common/GoogleIcon.vue'
-import { User as UserIcon } from '@element-plus/icons-vue'
 import { useI18n } from '@/i18n'
 import { safeNextPath } from '@/services/authApi'
 import { useAuthStore } from '@/stores/auth'
@@ -43,7 +43,7 @@ const onGuest = async (): Promise<void> => {
     :title="t('auth.title')"
     width="420px"
     align-center
-    class="console-dialog"
+    class="console-dialog signin-dialog"
   >
     <template v-if="auth.isOfficialCloud">
       <p class="text-[13px] leading-relaxed text-[var(--console-text-dim)]">
@@ -61,25 +61,28 @@ const onGuest = async (): Promise<void> => {
         {{ errorMessage }}
       </p>
 
-      <div class="mt-5 flex flex-col gap-2">
+      <div class="signin-actions mt-5 flex flex-col gap-2.5">
         <ElButton
           v-for="provider in auth.providers"
           :key="provider.id"
           :disabled="!provider.configured || auth.signingIn"
-          class="!h-9 !w-full !justify-center"
+          class="signin-provider"
           :title="provider.configured ? undefined : t('auth.providerUnavailable')"
           @click="onSignIn(provider.id)"
         >
-          <GithubIcon v-if="provider.id === 'github'" :size="15" class="mr-2" />
-          <GoogleIcon v-else :size="15" class="mr-2" />
-          <span>
+          <GithubIcon v-if="provider.id === 'github'" :size="16" />
+          <GoogleIcon v-else :size="16" />
+          <span class="signin-provider-label">
             {{
               provider.id === 'github'
                 ? t('auth.continueWithGithub')
                 : t('auth.continueWithGoogle')
             }}
           </span>
-          <span v-if="!provider.configured" class="ml-2 text-[11px] opacity-70">
+          <span
+            v-if="!provider.configured"
+            class="signin-provider-state"
+          >
             {{ t('auth.providerUnavailable') }}
           </span>
         </ElButton>
@@ -101,11 +104,13 @@ const onGuest = async (): Promise<void> => {
         </p>
         <ElButton
           :loading="auth.startingGuest"
-          class="!h-9 !w-full !justify-center"
+          class="signin-provider signin-provider-guest"
           @click="onGuest"
         >
-          <UserIcon class="mr-2" :size="15" />
-          {{ t('auth.continueAsGuest') }}
+          <ElIcon :size="16" class="signin-guest-icon">
+            <UserIcon />
+          </ElIcon>
+          <span class="signin-provider-label">{{ t('auth.continueAsGuest') }}</span>
         </ElButton>
       </div>
 

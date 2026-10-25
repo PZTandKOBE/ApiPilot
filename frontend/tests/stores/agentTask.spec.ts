@@ -71,6 +71,9 @@ describe('running a task', () => {
     expect(agent.analysisError).toBeNull()
     expect(agent.projectPlans).toHaveLength(1)
     expect(agent.taskStatus).toBe('failed')
+    // The refusal is about the plan; the analysis the user was reviewing is
+    // still valid and must remain available.
+    expect(agent.understanding).not.toBeNull()
   })
 
   it('leaves an approved plan alone when a second task is refused', async () => {

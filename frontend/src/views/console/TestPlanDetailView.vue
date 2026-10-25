@@ -1,10 +1,11 @@
 <script setup lang="ts">
-import { Back, MagicStick, Tickets } from '@element-plus/icons-vue'
+import { Back, Delete, MagicStick, Tickets } from '@element-plus/icons-vue'
 import { ElButton, ElIcon } from 'element-plus'
-import { computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import ApprovalPanel from '@/components/console/Agent/ApprovalPanel.vue'
+import PlanDeleteDialog from '@/components/console/Agent/PlanDeleteDialog.vue'
 import TestPlan from '@/components/console/Agent/TestPlan.vue'
 import ConsoleEmptyState from '@/components/console/ConsoleEmptyState.vue'
 import ConsolePageHeader from '@/components/console/ConsolePageHeader.vue'
@@ -25,6 +26,9 @@ const { t } = useI18n()
 const { localize } = useLocalizedText()
 const store = useAgentStore()
 const route = useRoute()
+const router = useRouter()
+const deleteOpen = ref(false)
+const deleteTarget = ref<TestPlanModel | null>(null)
 
 /**
  * Read through `projectPlans` rather than a dedicated getter: a plan only
@@ -47,6 +51,17 @@ onMounted(() => {
 const versionLabel = computed(() =>
   t('console.plans.version', { version: plan.value?.version ?? 1 }),
 )
+
+const openDelete = (): void => {
+  if (plan.value === null) return
+
+  deleteTarget.value = plan.value
+  deleteOpen.value = true
+}
+
+const onDeleted = (): void => {
+  void router.replace({ name: 'console-project-plans' })
+}
 </script>
 
 <template>
@@ -82,6 +97,13 @@ const versionLabel = computed(() =>
             {{ t('console.plans.current') }}
           </span>
         </div>
+      </template>
+
+      <template #actions>
+        <ElButton size="small" type="danger" plain @click="openDelete">
+          <ElIcon class="mr-1.5"><Delete /></ElIcon>
+          {{ t('console.plans.delete') }}
+        </ElButton>
       </template>
     </ConsolePageHeader>
 
@@ -119,5 +141,12 @@ const versionLabel = computed(() =>
         {{ t('console.plans.backToList') }}
       </ElButton>
     </div>
+
+    <PlanDeleteDialog
+      v-if="deleteTarget !== null"
+      v-model="deleteOpen"
+      :plan="deleteTarget"
+      @deleted="onDeleted"
+    />
   </div>
 </template>

@@ -16,9 +16,9 @@ import EnvironmentSwitcher from './EnvironmentSwitcher.vue'
  * drawer below it. The drawer is the only place the console overlays content —
  * on a narrow screen the rail would otherwise eat a third of the width.
  *
- * Settings sits in the footer, outside the scrolling list, because it is not a
- * step of anything above it; the collapse control lives there too, so the
- * scrolling area holds nothing but destinations.
+ * The collapse control sits in the footer, outside the scrolling list, so the
+ * scrolling area holds nothing but destinations. Workflows and Settings are no
+ * longer rendered here; their routes remain available for direct navigation.
  */
 const { t } = useI18n()
 const ui = useUiStore()

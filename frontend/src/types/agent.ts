@@ -384,6 +384,22 @@ export const AGENT_TASK_STATUSES = ['pending', 'analyzing', 'completed', 'failed
 
 export type AgentTaskStatus = (typeof AGENT_TASK_STATUSES)[number]
 
+/**
+ * One persisted agent task, as the dashboard's activity list reads it.
+ *
+ * This is deliberately not AgentTaskResult: the list endpoint carries neither
+ * the plan tree nor the understanding. The prompt is the frozen sentence the
+ * task was created with and is the only display copy the list has.
+ */
+export interface AgentTaskSummary {
+  readonly id: string
+  readonly projectId: string
+  readonly prompt: string
+  readonly status: AgentTaskStatus
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
 /* ------------------------------------------------------------------ *
  * Pipeline
  * ------------------------------------------------------------------ */

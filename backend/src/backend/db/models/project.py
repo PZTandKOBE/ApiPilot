@@ -279,7 +279,7 @@ class ApiEndpoint(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
 
 class Environment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
-    """A named target (development / staging / production) with a base URL.
+    """A named target (development / testing / staging / production) with a base URL.
 
     ``public_id`` (``env_orders_staging``) is scoped to the project: the
     frontend's id happens to embed the project name, but nothing guarantees it,

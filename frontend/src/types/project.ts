@@ -6,7 +6,7 @@
  * mock with `GET /api/projects` is a service-layer change only.
  */
 
-export type EnvironmentKind = 'development' | 'staging' | 'production'
+export type EnvironmentKind = 'development' | 'testing' | 'staging' | 'production'
 
 /**
  * A single `{{name}}` substitution available to every request issued against
@@ -39,8 +39,23 @@ export interface Project {
   readonly updatedAt: string
 }
 
+/** The latest persisted API specification for one project. */
+export interface ProjectSpecSummary {
+  readonly id: string
+  readonly name: string
+  readonly filename: string | null
+  readonly specType: string
+  readonly contentFormat: string
+  readonly version: string | null
+  readonly source: string
+  readonly endpointCount: number
+  readonly createdAt: string
+  readonly updatedAt: string
+}
+
 const ENVIRONMENT_KINDS: readonly EnvironmentKind[] = [
   'development',
+  'testing',
   'staging',
   'production',
 ]

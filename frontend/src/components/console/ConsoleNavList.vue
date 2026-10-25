@@ -27,7 +27,7 @@ const { t } = useI18n()
     <template v-for="item in items" :key="item.routeName">
       <li
         v-if="item.groupKey && !collapsed"
-        class="console-label px-2.5 pb-1.5 pt-4 first:pt-1"
+        class="px-2.5 pb-1.5 pt-5 text-[11px] font-medium tracking-[0.06em] text-[var(--console-text-dim)] first:pt-1"
       >
         {{ t(item.groupKey) }}
       </li>

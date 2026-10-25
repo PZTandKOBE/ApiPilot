@@ -19,6 +19,7 @@ import { useApiClientStore } from '@/stores/apiClient'
 import { ProjectNotReadyError, useProjectStore } from '@/stores/project'
 import type { AgentHandoff } from '@/types/api'
 import type {
+  AgentTaskSummary,
   AnalysisProgress,
   ApiSpec,
   ApiUnderstanding,
@@ -108,7 +109,15 @@ export const useAgentStore = defineStore('agent', () => {
 
   const plansLoading = ref(false)
   const plansError = ref<AgentError | null>(null)
+  const deletingPlan = ref(false)
   let plansInFlight: Promise<void> | null = null
+  /** One best-effort audit recovery attempt per document per store lifetime. */
+  let restoreAttemptedSpecId: string | null = null
+
+  const tasks = ref<readonly AgentTaskSummary[]>([])
+  const tasksLoading = ref(false)
+  const tasksError = ref<AgentError | null>(null)
+  let tasksRequestToken = 0
 
   const projectId = computed(() => projectStore.activeProjectId)
 
@@ -141,6 +150,17 @@ export const useAgentStore = defineStore('agent', () => {
 
   const projectPlans = computed(() =>
     plans.value.filter((plan) => plan.projectId === projectId.value),
+  )
+
+  /** The active project's task activity, newest first. */
+  const projectTasks = computed<readonly AgentTaskSummary[]>(() =>
+    tasks.value
+      .filter((task) => task.projectId === projectId.value)
+      .sort(
+        (left, right) =>
+          right.createdAt.localeCompare(left.createdAt) ||
+          right.id.localeCompare(left.id),
+      ),
   )
 
   /**
@@ -277,6 +297,7 @@ export const useAgentStore = defineStore('agent', () => {
     parsed.value = next
     understanding.value = null
     progress.value = null
+    restoreAttemptedSpecId = null
 
     persistSpec(next, content)
 
@@ -335,6 +356,7 @@ export const useAgentStore = defineStore('agent', () => {
     taskId.value = null
     taskStatus.value = null
     progress.value = null
+    restoreAttemptedSpecId = null
     clearErrors()
   }
 
@@ -441,7 +463,10 @@ export const useAgentStore = defineStore('agent', () => {
 
       return result
     } catch (thrown) {
-      understanding.value = null
+      // A refused plan request (or a failed re-analysis) must not discard a
+      // valid understanding the user is still allowed to review. The error is
+      // still reported; the previous analysis remains available until a new one
+      // succeeds.
       taskStatus.value = 'failed'
 
       const error = toAgentError(thrown, 'console.aiTest.errors.analyzeFailed')
@@ -492,6 +517,107 @@ export const useAgentStore = defineStore('agent', () => {
 
   const analyzeSpec = async (): Promise<void> => {
     await runTask()
+  }
+
+  /**
+   * Retire a plan series and remove its local versions.
+   *
+   * The server soft-deletes every version in the document series while keeping
+   * historical runs and reports. The local list drops the same series only
+   * after the request succeeds; a failed request leaves every plan where it was.
+   */
+  const deletePlan = async (projectId: string, planId: string): Promise<boolean> => {
+    if (deletingPlan.value) return false
+
+    const target = plans.value.find(
+      (plan) => plan.projectId === projectId && plan.id === planId,
+    )
+    if (target === undefined) return false
+
+    deletingPlan.value = true
+
+    try {
+      await agent.deletePlan(projectId, planId)
+
+      plans.value = plans.value.filter(
+        (plan) =>
+          !(plan.projectId === projectId && plan.specId === target.specId),
+      )
+
+      return true
+    } catch {
+      return false
+    } finally {
+      deletingPlan.value = false
+    }
+  }
+
+  /**
+   * Drop all local, project-owned agent state after a project is deleted.
+   *
+   * Server rows are gone already; this removes the browser's persisted copy so
+   * another project cannot inherit the deleted project's spec or plans.
+   */
+  const forgetProject = (projectId: string): void => {
+    storedSpecs.value = storedSpecs.value.filter(
+      (item) => item.spec.projectId !== projectId,
+    )
+    plans.value = plans.value.filter((plan) => plan.projectId !== projectId)
+    tasks.value = tasks.value.filter((task) => task.projectId !== projectId)
+
+    if (parsed.value?.spec.projectId === projectId) {
+      parsed.value = null
+      understanding.value = null
+      taskId.value = null
+      taskStatus.value = null
+      progress.value = null
+      restoreAttemptedSpecId = null
+      clearErrors()
+    }
+  }
+
+  /**
+   * Restore the review after a reload from the task audit.
+   *
+   * The understanding is not persisted, but the backend's task audit already
+   * stores the validated analysis for every task. On a fresh page load the
+   * plan is restored from the server; this asks the existing audit read for the
+   * matching understanding so the five-step review can render real data instead
+   * of disappearing. It is deliberately best-effort: no audit, an old task, or
+   * a failed request leaves the normal spec/plan view untouched.
+   */
+  const restoreAnalysis = async (): Promise<void> => {
+    const project = projectId.value
+    const spec = currentSpec.value
+
+    if (project === '' || spec === null || understanding.value !== null || analyzing.value) return
+    if (restoreAttemptedSpecId === spec.id) return
+
+    restoreAttemptedSpecId = spec.id
+
+    try {
+      const recent = await agent.listTasks(project, 20)
+
+      for (const summary of recent) {
+        if (summary.projectId !== project || summary.status !== 'completed') continue
+
+        try {
+          const recovered = await agent.getTaskAudit(summary.id)
+
+          if (recovered !== null && recovered.specId === spec.id) {
+            understanding.value = recovered
+            taskId.value = summary.id
+            taskStatus.value = 'completed'
+            return
+          }
+        } catch {
+          // A task without an audit is not an error the reader needs to see;
+          // try the next recent task.
+        }
+      }
+    } catch {
+      // Recovery must never turn a usable plan into an error banner.
+    }
   }
 
   /* --- Planning ----------------------------------------------------- */
@@ -594,6 +720,59 @@ export const useAgentStore = defineStore('agent', () => {
 
     plansInFlight = request
     return request
+  }
+
+  /**
+   * Read recent tasks without replacing the dashboard's task collection.
+   *
+   * The notification center needs a wider window than the dashboard's three
+   * rows, but it must not turn the dashboard into a twenty-row feed. This is a
+   * read-only query through the same service instance, so mock and real modes
+   * keep their existing task state.
+   */
+  const listRecentTasks = async (
+    limit = 20,
+  ): Promise<readonly AgentTaskSummary[]> => {
+    const project = projectId.value
+    if (project === '') return []
+
+    return await agent.listTasks(project, limit)
+  }
+
+  /**
+   * Load the active project's recent task activity.
+   *
+   * A request token, not a single-flight promise, because project switching is
+   * the important race: a response for the previous project must neither land
+   * in the current list nor clear the loading flag of the newer request.
+   */
+  const loadTasks = async (): Promise<void> => {
+    const project = projectId.value
+    if (project === '') return
+
+    const token = (tasksRequestToken += 1)
+    tasksLoading.value = true
+    tasksError.value = null
+
+    try {
+      const remote = await agent.listTasks(project, 3)
+
+      if (token !== tasksRequestToken) return
+
+      tasks.value = [
+        ...tasks.value.filter((task) => task.projectId !== project),
+        ...remote,
+      ]
+    } catch (thrown) {
+      if (token !== tasksRequestToken) return
+
+      tasksError.value = toAgentError(
+        thrown,
+        'console.aiTest.errors.loadFailed',
+      )
+    } finally {
+      if (token === tasksRequestToken) tasksLoading.value = false
+    }
   }
 
   /* --- Approval boundary -------------------------------------------- */
@@ -728,6 +907,7 @@ export const useAgentStore = defineStore('agent', () => {
 
   const hydrate = async (id: string): Promise<void> => {
     const token = (hydrationToken += 1)
+    restoreAttemptedSpecId = null
     const stored = storedSpecs.value.find((item) => item.spec.projectId === id)
 
     if (stored === undefined) {
@@ -751,6 +931,10 @@ export const useAgentStore = defineStore('agent', () => {
       understanding.value = null
       taskId.value = null
       taskStatus.value = null
+
+      // The document is now decoded; the persisted analysis can be restored
+      // from the audit without racing this hydration pass.
+      void restoreAnalysis()
     } catch {
       if (token !== hydrationToken) return
 
@@ -782,12 +966,16 @@ export const useAgentStore = defineStore('agent', () => {
     planError,
     plansLoading,
     plansError,
+    deletingPlan,
     pendingHandoff,
+    tasksLoading,
+    tasksError,
 
     // derived
     currentSpec,
     currentSpecDocument,
     projectPlans,
+    projectTasks,
     activePlan,
     step,
     completedSteps,
@@ -797,10 +985,15 @@ export const useAgentStore = defineStore('agent', () => {
     loadDemoSpec,
     resetSpec,
     analyzeSpec,
+    restoreAnalysis,
     loadTask,
     generatePlan,
     regeneratePlan,
     loadPlans,
+    listRecentTasks,
+    deletePlan,
+    forgetProject,
+    loadTasks,
     startReview,
     approvePlan,
     rejectPlan,

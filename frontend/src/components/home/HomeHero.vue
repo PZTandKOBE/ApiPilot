@@ -18,16 +18,14 @@ const pipeline = computed(() => messages.value.showcase.steps)
 
 <template>
   <section class="relative">
-    <div class="flex flex-col items-center gap-8 text-center lg:items-start lg:text-left">
+    <div class="flex flex-col items-center gap-7 text-center lg:items-start lg:text-left">
       <!-- Eyebrow -->
       <div
-        class="inline-flex items-center gap-2 rounded-full border border-[var(--glass-border)] bg-white/[0.03] px-3.5 py-1.5 backdrop-blur-md"
+        class="inline-flex items-center rounded-full border border-[var(--glass-border)] bg-white/[0.03] px-3 py-1.5 backdrop-blur-md"
       >
         <span
-          class="size-1.5 rounded-full bg-[var(--accent)] shadow-[0_0_10px_2px_rgba(167,139,250,0.6)]"
-          aria-hidden="true"
-        />
-        <span class="mockup-label !text-[var(--text-secondary)]">
+          class="text-[11.5px] font-medium leading-none tracking-[0.01em] text-[var(--text-secondary)]"
+        >
           {{ messages.hero.badge }}
         </span>
       </div>
@@ -35,19 +33,21 @@ const pipeline = computed(() => messages.value.showcase.steps)
       <HeroTitle />
 
       <!-- Value proposition -->
-      <p
-        class="max-w-[34ch] text-balance text-lg leading-snug text-[var(--text-secondary)] sm:text-xl lg:max-w-[40ch] lg:text-[1.35rem]"
-      >
-        <span class="block text-[var(--text-primary)]">
-          {{ messages.hero.subtitleLine1 }}
-        </span>
-        <span class="block">{{ messages.hero.subtitleLine2 }}</span>
-      </p>
+      <div class="flex max-w-[34rem] flex-col items-center gap-3 lg:items-start">
+        <h2
+          class="text-balance text-[clamp(1.55rem,2.3vw,2.05rem)] font-semibold leading-[1.25] tracking-[-0.025em] text-[var(--text-primary)]"
+        >
+          {{ messages.hero.headline }}
+        </h2>
+        <p class="text-[14px] leading-relaxed text-[var(--text-secondary)]">
+          {{ messages.hero.support }}
+        </p>
+      </div>
 
       <HeroActions />
 
       <!-- Pipeline caption -->
-      <ul
+      <ol
         class="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5 lg:justify-start"
       >
         <li
@@ -56,20 +56,22 @@ const pipeline = computed(() => messages.value.showcase.steps)
           class="flex items-center gap-2"
         >
           <span
-            class="font-mono text-[10.5px] uppercase tracking-[0.18em] text-[var(--text-muted)] transition-colors duration-300 hover:text-[var(--accent-soft)]"
+            class="text-[11.5px] font-medium tracking-[0.01em] text-[var(--text-secondary)]"
           >
             {{ step }}
           </span>
           <span
             v-if="index < pipeline.length - 1"
-            class="text-[10px] text-[var(--accent)]/45"
+            class="text-[11px] text-[var(--accent)]/60"
             aria-hidden="true"
             >→</span
           >
         </li>
-      </ul>
+      </ol>
 
-      <p class="text-xs text-[var(--text-muted)]">{{ messages.hero.ctaHint }}</p>
+      <p class="text-[12.5px] leading-relaxed text-[var(--text-secondary)]">
+        {{ messages.hero.ctaHint }}
+      </p>
     </div>
   </section>
 </template>

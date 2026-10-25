@@ -130,7 +130,7 @@ onMounted(() => {
             <p class="login-guest-divider">{{ t('auth.or') }}</p>
             <button
               type="button"
-              class="login-provider login-provider-primary"
+              class="login-provider login-guest-button"
               :disabled="auth.startingGuest"
               @click="onGuest"
             >

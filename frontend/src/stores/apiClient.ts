@@ -516,6 +516,33 @@ export const useApiClientStore = defineStore('apiClient', () => {
   }
 
   /**
+   * Drop one project's saved/history rows after a project is deleted.
+   *
+   * When the deleted project was the active one, also clear the in-flight
+   * response and draft so the next project cannot inherit a request editor that
+   * still points at the old project's environment.
+   */
+  const forgetProject = (projectId: string, clearSession = false): void => {
+    collections.value = collections.value.filter(
+      (collection) => collection.projectId !== projectId,
+    )
+    history.value = history.value.filter((item) => item.projectId !== projectId)
+
+    if (!clearSession) return
+
+    controller?.abort()
+    controller = null
+    sending.value = false
+    response.value = null
+    error.value = null
+    lastSentAt.value = null
+    handoff.value = null
+    openRequestId.value = null
+    openRequestName.value = ''
+    draft.value = createEmptyDraft()
+  }
+
+  /**
    * Switching project clears everything that belonged to the previous one —
    * but not the draft, which is work in progress the user did not ask to lose.
    */
@@ -569,5 +596,6 @@ export const useApiClientStore = defineStore('apiClient', () => {
 
     requestAgentHandoff,
     clearHandoff,
+    forgetProject,
   }
 })

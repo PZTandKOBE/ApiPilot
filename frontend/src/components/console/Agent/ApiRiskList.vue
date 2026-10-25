@@ -4,7 +4,13 @@ import { computed } from 'vue'
 import { useLocalizedText } from '@/composables/useLocalizedText'
 import { useI18n } from '@/i18n'
 import { useAgentStore } from '@/stores/agent'
-import type { RiskCategory, RiskLevel } from '@/types/agent'
+import type {
+  ApiEndpoint,
+  ApiRisk,
+  RiskCategory,
+  RiskLevel,
+} from '@/types/agent'
+import { methodColor } from '@/utils/http'
 
 /**
  * What the agent thinks is worth testing, and why.
@@ -48,6 +54,21 @@ const ORDER: Readonly<Record<RiskLevel, number>> = { high: 0, medium: 1, low: 2 
 const sorted = computed(() =>
   [...risks.value].sort((a, b) => ORDER[a.level] - ORDER[b.level]),
 )
+
+const endpointById = computed(
+  () =>
+    new Map(
+      (store.understanding?.endpoints ?? []).map((endpoint) => [
+        endpoint.id,
+        endpoint,
+      ]),
+    ),
+)
+
+const relatedEndpoints = (risk: ApiRisk): readonly ApiEndpoint[] =>
+  risk.relatedEndpointIds
+    .map((id) => endpointById.value.get(id))
+    .filter((endpoint): endpoint is ApiEndpoint => endpoint !== undefined)
 </script>
 
 <template>
@@ -98,6 +119,36 @@ const sorted = computed(() =>
         <p class="mt-1 text-[11.5px] leading-relaxed text-[var(--console-text-muted)]">
           {{ localize(risk.detail) }}
         </p>
+
+        <div
+          v-if="relatedEndpoints(risk).length > 0"
+          class="mt-2 flex flex-wrap items-center gap-1.5"
+        >
+          <span class="console-label">{{ t('console.aiTest.risks.relatedEndpoints') }}</span>
+          <span
+            v-for="endpoint in relatedEndpoints(risk)"
+            :key="endpoint.id"
+            class="inline-flex items-baseline gap-1 rounded border border-[var(--console-border)] bg-black/20 px-1.5 py-0.5 font-mono text-[10.5px] text-[var(--console-text-dim)]"
+          >
+            <span
+              class="font-semibold"
+              :style="{ color: methodColor(endpoint.method) }"
+            >
+              {{ endpoint.method }}
+            </span>
+            <span>{{ endpoint.path }}</span>
+          </span>
+        </div>
+
+        <div
+          v-if="risk.fields.length > 0"
+          class="mt-1.5 flex flex-wrap items-baseline gap-1.5"
+        >
+          <span class="console-label">{{ t('console.aiTest.risks.fields') }}</span>
+          <span class="font-mono text-[10.5px] text-[var(--console-text-dim)]">
+            {{ risk.fields.join(', ') }}
+          </span>
+        </div>
       </li>
     </ul>
   </section>

@@ -8,8 +8,10 @@ import ConsoleEmptyState from '@/components/console/ConsoleEmptyState.vue'
 import ConsolePageHeader from '@/components/console/ConsolePageHeader.vue'
 import ProjectCard from '@/components/console/ProjectCard.vue'
 import ProjectCreateDialog from '@/components/console/ProjectCreateDialog.vue'
+import ProjectDeleteDialog from '@/components/console/ProjectDeleteDialog.vue'
 import { useI18n } from '@/i18n'
 import { useProjectStore } from '@/stores/project'
+import type { Project } from '@/types/project'
 
 /**
  * Project index.
@@ -33,6 +35,13 @@ const router = useRouter()
 const store = useProjectStore()
 
 const createOpen = ref(false)
+const deleteTarget = ref<Project | null>(null)
+const deleteOpen = ref(false)
+
+const openDelete = (project: Project): void => {
+  deleteTarget.value = project
+  deleteOpen.value = true
+}
 
 const onCreated = (projectId: string): void => {
   void router.push({ name: 'console-project-overview', params: { projectId } })
@@ -61,6 +70,7 @@ const onCreated = (projectId: string): void => {
         v-for="project in store.projects"
         :key="project.id"
         :project="project"
+        @delete="openDelete(project)"
       />
     </div>
 
@@ -77,5 +87,11 @@ const onCreated = (projectId: string): void => {
     </div>
 
     <ProjectCreateDialog v-model="createOpen" @created="onCreated" />
+
+    <ProjectDeleteDialog
+      v-if="deleteTarget !== null"
+      v-model="deleteOpen"
+      :project="deleteTarget"
+    />
   </div>
 </template>

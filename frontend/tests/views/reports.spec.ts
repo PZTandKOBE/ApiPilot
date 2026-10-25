@@ -71,6 +71,34 @@ describe('report center', () => {
     expect(textOf(html)).toContain('Print / Save as PDF')
   })
 
+  it('groups the three report actions in one aligned control', async () => {
+    const store = useReportsStore()
+    store.reports = [
+      {
+        id: 'report-1',
+        projectId: 'prj_orders',
+        runId: 'run-1234',
+        name: 'ApiPilot 测试运行报告',
+        filename: 'ApiPilot-Run-run-1234.pdf',
+        contentType: 'application/pdf',
+        byteSize: 2048,
+        sha256: 'abc',
+        generatedAt: '2026-10-17T12:00:00.000Z',
+        runStatus: 'passed',
+      },
+    ]
+
+    const html = await render()
+    const group = (html.match(/<div[^>]*data-testid="report-actions"[\s\S]*?<\/td>/g) ?? []).join('')
+
+    expect((html.match(/data-testid="report-actions"/g) ?? [])).toHaveLength(1)
+    expect(group).toContain('role="group"')
+    expect(group).toContain('Open PDF')
+    expect(group).toContain('Download')
+    expect(group).toContain('Print / Save as PDF')
+    expect(html).toContain('class="report-actions"')
+  })
+
   it('shows the honest empty state when the server has no reports', async () => {
     useReportsStore()
     const html = await render()

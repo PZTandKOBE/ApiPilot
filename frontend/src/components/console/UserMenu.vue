@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import {
   ArrowDown,
-  Setting,
   SwitchButton,
   User as UserIcon,
 } from '@element-plus/icons-vue'
@@ -13,7 +12,7 @@ import {
   ElDropdownMenu,
   ElIcon,
 } from 'element-plus'
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { useI18n } from '@/i18n'
@@ -36,9 +35,6 @@ const route = useRoute()
 
 const signInOpen = ref(false)
 
-/** Settings arrives in a later phase; until then the entry stays inert. */
-const settingsAvailable = computed(() => router.hasRoute('console-settings'))
-
 const onCommand = async (command: unknown): Promise<void> => {
   if (command === 'login') {
     signInOpen.value = true
@@ -56,11 +52,6 @@ const onCommand = async (command: unknown): Promise<void> => {
     if (auth.isOfficialCloud && auth.user === null) {
       void router.replace({ name: 'login', query: { next: '/console' } })
     }
-    return
-  }
-
-  if (command === 'settings' && settingsAvailable.value) {
-    void router.push({ name: 'console-settings' })
   }
 }
 </script>
@@ -166,12 +157,7 @@ const onCommand = async (command: unknown): Promise<void> => {
             </p>
           </li>
 
-          <ElDropdownItem divided command="settings" :disabled="!settingsAvailable">
-            <ElIcon class="mr-2"><Setting /></ElIcon>
-            {{ t('console.topbar.settings') }}
-          </ElDropdownItem>
-
-          <ElDropdownItem command="logout">
+          <ElDropdownItem divided command="logout">
             <ElIcon class="mr-2"><SwitchButton /></ElIcon>
             {{ t('console.topbar.logout') }}
           </ElDropdownItem>

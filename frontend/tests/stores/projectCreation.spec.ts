@@ -18,11 +18,10 @@ import { installStorage, removeStorage } from '../support/storage'
  *
  * \`services/api/projects.ts\` and \`services/http.ts\` are the shipped modules and
  * \`fetch\` is stubbed at the boundary they use, so the request line, the body and
- * the guest-session header are checked as they would be sent.  Readiness is *not*
- * stubbed: every test below lets the action reach the real
- * \`requireReadyProjectId()\` and the real \`initialize()\` behind it, which is what
- * makes "it does not create a project against a list nobody verified" a statement
- * about the shipped code.
+ * the guest-session header are checked as they would be sent. Readiness is *not*
+ * stubbed: every test below lets the action reach the shipped initialize()
+ * and its ready-state check. The real empty-list branch is covered separately
+ * in projectPersistence.spec.ts.
  *
  * ## The branch the default config cannot take
  *

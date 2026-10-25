@@ -4,7 +4,16 @@ import { computed, ref } from 'vue'
 import { usePersistedRef } from '@/composables/usePersistedRef'
 // Aliased: the *service* function and the *store action* below are both the
 // project-creating operation, and the action is the name callers should use.
-import { createProject as createProjectRequest, listProjects } from '@/services/api/projects'
+import {
+  createEnvironment as createEnvironmentRequest,
+  createProject as createProjectRequest,
+  deleteProject as deleteProjectRequest,
+  listProjects,
+  updateEnvironment as updateEnvironmentRequest,
+  updateProject as updateProjectRequest,
+  type CreateEnvironmentInput,
+  type UpdateEnvironmentInput,
+} from '@/services/api/projects'
 import type { Project, ProjectEnvironment } from '@/types/project'
 
 /**
@@ -18,9 +27,6 @@ import type { Project, ProjectEnvironment } from '@/types/project'
  */
 const usesRealProjects = (): boolean =>
   import.meta.env.MODE !== 'test' && import.meta.env.VITE_PROJECT_SERVICE !== 'mock'
-
-/** The name the first project gets when a guest has none yet. */
-const FIRST_PROJECT_NAME = 'My first API'
 
 const PROJECT_STORAGE_KEY = 'aiata.console.project'
 const ENVIRONMENT_STORAGE_KEY = 'aiata.console.environment'
@@ -180,12 +186,17 @@ export const useProjectStore = defineStore('project', () => {
   }
 
   /**
-   * Load this guest's projects, creating the first one if there are none.
+   * Load this guest's projects.
+   *
+   * An empty list is a real answer, not an instruction to create a placeholder.
+   * Creating "My first API" here was what made a deleted last project reappear
+   * after a refresh: the deletion was persistent, but the next initialization
+   * made a brand-new project with the same familiar name. The project index and
+   * dashboard already render the empty state and creation entry.
    *
    * Single-flight: the promise lives outside the returned state, so two views
-   * mounting together share one load -- and, when the list is empty, one created
-   * project rather than two. A failure is recorded and *not* retried here: the
-   * page is told, and it is the page's decision whether to try again.
+   * mounting together share one load. A failure is recorded and *not* retried
+   * here: the page is told, and it is the page's decision whether to try again.
    */
   const initialize = async (): Promise<void> => {
     if (!usesRealProjects()) {
@@ -203,15 +214,21 @@ export const useProjectStore = defineStore('project', () => {
     inFlight = (async () => {
       try {
         const loaded = await listProjects()
-        const mine =
-          loaded.length > 0
-            ? loaded
-            : [await createProjectRequest({ name: FIRST_PROJECT_NAME })]
 
-        projects.value = mine
+        projects.value = loaded
+
+        if (loaded.length === 0) {
+          // Nothing was deleted by this branch and nothing is invented by it.
+          // The persisted id belongs to the project the user just removed; it
+          // must not become a candidate for the next list or the next request.
+          activeProjectId.value = ''
+          activeEnvironmentId.value = ''
+          status.value = 'ready'
+          return
+        }
 
         const stored = activeProjectId.value
-        const chosen = mine.find((project) => project.id === stored) ?? mine[0]
+        const chosen = loaded.find((project) => project.id === stored) ?? loaded[0]
 
         activeProjectId.value = chosen.id
         activeEnvironmentId.value = chosen.environments[0]?.id ?? ''
@@ -241,16 +258,21 @@ export const useProjectStore = defineStore('project', () => {
    */
   const creating = ref(false)
 
+  /** One project/environment write at a time, so a double click is one PATCH. */
+  const updating = ref(false)
+
+  /** Set while a project deletion request is in flight. */
+  const deletingProject = ref(false)
+
   /**
    * Create a project, owned by this guest, and make it the active one.
    *
    * Three things this deliberately does *not* do.
    *
-   * **It does not re-implement initialisation.**  A caller may be looking at the
-   * seeded project list, which is not evidence of anything; `requireReadyProjectId`
-   * is awaited first, so the list this action appends to is the guest's real one.
-   * A refusal is reported as failure rather than papered over with a project the
-   * backend never created.
+   * **It does not re-implement initialisation.** A caller may be looking at
+   * projects from a previous session; the real list is awaited first. An empty
+   * list is a valid input here: it is exactly the state left after deleting the
+   * last project, and the creation entry must still work.
    *
    * **It does not send an owner.**  The body is the name and, optionally, where
    * the project's API lives -- the request schema forbids anything else, and
@@ -269,11 +291,16 @@ export const useProjectStore = defineStore('project', () => {
     if (trimmed === '') return null
 
     try {
-      await requireReadyProjectId()
+      await initialize()
     } catch {
       // Not ready is not a project: report the failure, invent nothing.
       return null
     }
+
+    // The list must have actually answered, but it may legitimately be empty:
+    // creating the first project after deleting the last one is a supported
+    // path. The stricter ready-project gate would reject that legitimate state.
+    if (status.value !== 'ready') return null
 
     // Re-checked after the await: initialisation can take a moment, and two
     // clicks that both passed the check above must not become two projects.
@@ -309,6 +336,163 @@ export const useProjectStore = defineStore('project', () => {
     }
   }
 
+  /**
+   * Replace a project with the backend's new aggregate.
+   *
+   * The environment summary response intentionally does not include variable
+   * values, so variables held by the current client are preserved when the
+   * server's summary has none.  This route only edits name/kind/base URL; it
+   * must not make existing local variables disappear from the console.
+   */
+  const replaceProject = (updated: Project): Project => {
+    const previous = projectById(updated.id)
+
+    const merged: Project =
+      previous === null
+        ? updated
+        : {
+            ...updated,
+            environments: updated.environments.map((environment) => {
+              const old = previous.environments.find(
+                (item) => item.id === environment.id,
+              )
+
+              return old !== undefined && environment.variables.length === 0
+                ? { ...environment, variables: old.variables }
+                : environment
+            }),
+          }
+
+    projects.value = projects.value.map((project) =>
+      project.id === merged.id ? merged : project,
+    )
+
+    if (
+      activeProjectId.value === merged.id &&
+      !merged.environments.some(
+        (environment) => environment.id === activeEnvironmentId.value,
+      )
+    ) {
+      activeEnvironmentId.value = merged.environments[0]?.id ?? ''
+    }
+
+    return merged
+  }
+
+  const deleteProject = async (projectId: string): Promise<boolean> => {
+    if (deletingProject.value || projectById(projectId) === null) return false
+
+    deletingProject.value = true
+    error.value = null
+
+    try {
+      await deleteProjectRequest(projectId)
+
+      const remaining = projects.value.filter((project) => project.id !== projectId)
+      projects.value = remaining
+
+      if (activeProjectId.value === projectId) {
+        const next = remaining[0] ?? null
+        activeProjectId.value = next?.id ?? ''
+        activeEnvironmentId.value = next?.environments[0]?.id ?? ''
+      }
+
+      return true
+    } catch (thrown) {
+      error.value =
+        thrown instanceof Error ? thrown.message : 'project-delete-failed'
+
+      return false
+    } finally {
+      deletingProject.value = false
+    }
+  }
+
+  const updateProjectName = async (
+    projectId: string,
+    name: string,
+  ): Promise<Project | null> => {
+    const trimmed = name.trim()
+
+    if (trimmed === '' || updating.value) return null
+    if (projectById(projectId) === null) return null
+
+    updating.value = true
+    error.value = null
+
+    try {
+      const updated = await updateProjectRequest(projectId, { name: trimmed })
+
+      return replaceProject(updated)
+    } catch (thrown) {
+      error.value =
+        thrown instanceof Error ? thrown.message : 'project-update-failed'
+
+      return null
+    } finally {
+      updating.value = false
+    }
+  }
+
+  const createEnvironment = async (
+    projectId: string,
+    input: CreateEnvironmentInput,
+  ): Promise<Project | null> => {
+    if (updating.value || projectById(projectId) === null) return null
+
+    updating.value = true
+    error.value = null
+
+    try {
+      const updated = await createEnvironmentRequest(projectId, input)
+
+      return replaceProject(updated)
+    } catch (thrown) {
+      error.value =
+        thrown instanceof Error ? thrown.message : 'environment-create-failed'
+
+      return null
+    } finally {
+      updating.value = false
+    }
+  }
+
+  const updateEnvironment = async (
+    projectId: string,
+    environmentId: string,
+    input: UpdateEnvironmentInput,
+  ): Promise<Project | null> => {
+    if (updating.value) return null
+
+    const project = projectById(projectId)
+    if (
+      project === null ||
+      !project.environments.some((environment) => environment.id === environmentId)
+    ) {
+      return null
+    }
+
+    updating.value = true
+    error.value = null
+
+    try {
+      const updated = await updateEnvironmentRequest(
+        projectId,
+        environmentId,
+        input,
+      )
+
+      return replaceProject(updated)
+    } catch (thrown) {
+      error.value =
+        thrown instanceof Error ? thrown.message : 'environment-update-failed'
+
+      return null
+    } finally {
+      updating.value = false
+    }
+  }
+
   return {
     projects,
     activeProjectId,
@@ -323,8 +507,14 @@ export const useProjectStore = defineStore('project', () => {
     status,
     error,
     creating,
+    updating,
+    deletingProject,
     initialize,
     requireReadyProjectId,
     createProject,
+    deleteProject,
+    updateProjectName,
+    createEnvironment,
+    updateEnvironment,
   }
 })

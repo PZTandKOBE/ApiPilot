@@ -59,6 +59,36 @@ describe('pipeline position is derived, never stored', () => {
   })
 })
 
+describe('analysis recovery', () => {
+  it('restores the real understanding from the task audit after a reload', async () => {
+    const { agent } = setup()
+    await agent.loadDemoSpec()
+    await agent.analyzeSpec()
+
+    const specId = agent.currentSpec?.id
+    expect(agent.understanding?.specId).toBe(specId)
+
+    // A fresh browser has stored spec and plan but no in-memory understanding.
+    agent.$patch({ understanding: null })
+    await agent.restoreAnalysis()
+
+    const recovered = agent.understanding
+    expect(recovered?.specId).toBe(specId)
+    expect(recovered?.endpoints.length).toBeGreaterThan(0)
+    expect(agent.taskId).not.toBeNull()
+  })
+
+  it('does not fabricate an understanding when no audit can be read', async () => {
+    const { agent } = setup()
+    await agent.loadDemoSpec()
+
+    await agent.restoreAnalysis()
+
+    expect(agent.understanding).toBeNull()
+    expect(agent.analysisError).toBeNull()
+  })
+})
+
 describe('specification loading', () => {
   it('parses the demo document through the real service', async () => {
     const { agent } = setup()

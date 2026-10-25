@@ -101,6 +101,7 @@ describe('plan list', () => {
     expect(has(html, '4 Scenarios · 14 Steps · 11 Assertions')).toBe(true)
     expect(has(html, 'Generated')).toBe(true)
     expect(has(html, 'Source')).toBe(true)
+    expect(has(html, 'Delete plan')).toBe(true)
   })
 
   it('shows every version and marks the newest one current', async () => {
@@ -285,6 +286,7 @@ describe('plan detail', () => {
     expect(has(html, 'Back to Test Plans')).toBe(true)
     expect(has(html, 'User authentication')).toBe(true)
     expect(has(html, 'Scenarios')).toBe(true)
+    expect(has(html, 'Delete plan')).toBe(true)
     expect(has(html, 'has to be approved before it can run')).toBe(true)
   })
 

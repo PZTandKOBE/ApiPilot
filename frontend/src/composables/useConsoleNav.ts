@@ -4,8 +4,6 @@ import {
   MagicStick,
   Odometer,
   Promotion,
-  Setting,
-  Share,
   Tickets,
   VideoPlay,
 } from '@element-plus/icons-vue'
@@ -53,7 +51,6 @@ export const useConsoleNav = (): ConsoleNav => {
       icon: Promotion,
       routeName: 'console-project-api',
       params: { projectId: activeProjectId.value },
-      hintKey: 'console.nav.apiClientHint',
       groupKey: 'console.nav.sectionTesting',
     },
     {
@@ -61,7 +58,6 @@ export const useConsoleNav = (): ConsoleNav => {
       icon: MagicStick,
       routeName: 'console-project-ai-test',
       params: { projectId: activeProjectId.value },
-      hintKey: 'console.nav.aiTestLabHint',
     },
     {
       labelKey: 'console.nav.testPlans',
@@ -69,12 +65,6 @@ export const useConsoleNav = (): ConsoleNav => {
       routeName: 'console-project-plans',
       params: { projectId: activeProjectId.value },
       groupKey: 'console.nav.sectionDesign',
-    },
-    {
-      labelKey: 'console.nav.workflows',
-      icon: Share,
-      routeName: 'console-project-workflows',
-      params: { projectId: activeProjectId.value },
     },
     {
       labelKey: 'console.nav.testRuns',
@@ -92,18 +82,11 @@ export const useConsoleNav = (): ConsoleNav => {
   ])
 
   /**
-   * Settings is console-wide, not a phase of testing, so it sits in the rail's
-   * footer instead of a group of its own. Left at the end of the list above it
-   * would read as one more step, which is exactly the misreading the grouping
-   * exists to prevent.
+   * The footer is reserved for chrome controls. It currently has no
+   * destinations: Workflows and Settings were removed from the sidebar, while
+   * their underlying routes and implementations remain available directly.
    */
-  const footerSource = computed<readonly ConsoleNavItem[]>(() => [
-    {
-      labelKey: 'console.nav.settings',
-      icon: Setting,
-      routeName: 'console-settings',
-    },
-  ])
+  const footerSource = computed<readonly ConsoleNavItem[]>(() => [])
 
   const main = useResolvedNav(source)
   const footer = useResolvedNav(footerSource)

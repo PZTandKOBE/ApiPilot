@@ -1,5 +1,71 @@
 /* C33 run report: screen preview and a clean, paginated print sheet. */
 
+/* The report shelf's actions are one control group, not three independent
+   buttons that happen to share a cell. Keeping the group on one line on wide
+   desktops is the layout; the table column is widened to make that real rather
+   than forcing it with clipping. */
+.report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  margin-left: auto;
+}
+
+.report-actions .el-button {
+  margin-left: 0;
+  padding-right: 10px;
+  padding-left: 10px;
+  white-space: nowrap;
+}
+
+.report-actions .el-button + .el-button {
+  margin-left: 0;
+}
+
+@media (min-width: 1200px) {
+  .report-actions {
+    flex-wrap: nowrap;
+  }
+}
+
+/* Below the table's usable width, let the row read as a stacked record instead
+   of squeezing five fixed columns and clipping a nowrap action group. */
+@media (max-width: 767px) {
+  .report-table-center,
+  .report-table-center thead,
+  .report-table-center tbody,
+  .report-table-center tr,
+  .report-table-center th,
+  .report-table-center td {
+    display: block;
+    width: auto;
+  }
+
+  .report-table-center thead {
+    display: none;
+  }
+
+  .report-table-center tr {
+    padding: 12px;
+    border-top: 1px solid var(--console-border);
+  }
+
+  .report-table-center tr:first-child {
+    border-top: 0;
+  }
+
+  .report-table-center td {
+    padding: 2px 0;
+  }
+
+  .report-table-center .report-actions {
+    justify-content: flex-start;
+    margin-top: 8px;
+  }
+}
+
 .report-page {
   width: 100%;
   max-width: 980px;
