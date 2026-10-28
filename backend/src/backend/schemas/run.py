@@ -124,6 +124,20 @@ class PlanStep(Schema):
         default=None, description="Variable this step produces, for `extract` steps."
     )
     consumes: list[str] = Field(default_factory=list)
+    source_path: str | None = Field(
+        default=None,
+        description=(
+            "JSONPath subset for an extract step: where in the source response "
+            "the value lives. Independent of `produces`, the target variable."
+        ),
+    )
+    source_step_id: str | None = Field(
+        default=None,
+        description=(
+            "Plan step key of the request whose response an extract step reads. "
+            "Derived by the runtime; null on plans written before this field."
+        ),
+    )
     body: Any | None = Field(
         default=None,
         description=(

@@ -11,7 +11,13 @@
 [![Python 3.12+](https://img.shields.io/badge/Python-3.12%2B-3776ab.svg)](https://www.python.org/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169e1.svg)](https://www.postgresql.org/)
 
-**ApiPilot 是一个 AI 辅助的 API 自动化测试平台。** 它围绕 OpenAPI 规格分析、测试计划生成与审批、API 测试执行、运行结果查看，以及可持久化的 PDF 测试报告展开。
+**官方网站：** [https://x-apipilot.online/](https://x-apipilot.online/)
+
+**GitHub 仓库：** [PZTandKOBE/ApiPilot](https://github.com/PZTandKOBE/ApiPilot)
+
+**ApiPilot 是一个面向 API 开发与测试的开源工作台。** 它把传统 API 调试与 AI 辅助的 OpenAPI 分析、可审核测试计划、确定性执行和 PDF 测试报告放在同一个项目中，既可以本地开发，也可以自托管。
+
+官网提供产品介绍和在线入口；GitHub 仓库提供源代码、Issue 和自托管文档。自托管版本的安装、数据库、认证和模型配置仍以本文档为准。
 
 > **项目状态：首个可运行版本（First Release）。** 当前已经具备从项目与 OpenAPI 规格、Agent 分析、测试计划生成与人工审核、后端确定性执行，到 Run 结果、PDF 报告和项目内通知的完整核心工作流。本文档只描述当前已经实现并经过测试的能力；项目仍在持续完善，**不宣称已经达到生产级可靠性**，具体边界见[已知限制](#已知限制-1)。
 
@@ -36,6 +42,7 @@
     - [3. 安装后端依赖并迁移](#3-安装后端依赖并迁移)
     - [4. 启动后端](#4-启动后端)
     - [5. 启动前端](#5-启动前端)
+    - [可选：Docker 后端镜像](#可选docker-后端镜像)
     - [可选：不调用真实模型](#可选不调用真实模型)
   - [身份认证与 OAuth](#身份认证与-oauth)
     - [两种部署模式](#两种部署模式)
@@ -76,6 +83,8 @@ ApiPilot 把 API 测试的主要步骤放进一个工作台：
 
 LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运行状态、事件持久化和报告生成由后端确定性逻辑负责。
 
+适合的场景包括：调试单个 API 请求、导入 OpenAPI 规范生成可审查的测试计划、执行多请求工作流并保留 Run 历史，以及生成可下载的测试报告。
+
 ## 当前已实现
 
 ### 项目与 API 规格
@@ -99,12 +108,14 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 - 删除计划会停用该计划的全部版本，但保留历史 Run 和已生成报告，便于追溯。
 - 计划列表和详情显示 version、当前版本标记和关联 Run 数量。
 - OpenAPI security facts 会区分“未声明 security”“显式 public”和“需要认证”，用于确定性 Planner 决定是否生成认证场景。
+- OpenAPI 响应 Schema 解析覆盖对象、数组 `items` 和 `$ref`；Agent 可据此选择响应体字段及数组元素来源。
 - Run 详情区分 **Initial variables** 与 **Runtime variables**；运行时变量由成功的 Extract 步骤派生，只显示名称/作用域，不暴露值。
+- Extract 明确区分目标变量 `produces`、响应来源路径 `sourcePath` 和来源请求步骤 `sourceStepId`，来源字段与目标变量可以不同名。
 
 ### API 测试执行与 Run
 
 - 后端 Run Executor 执行 HTTP 请求，支持多请求流程、环境变量替换、运行时变量提取和步骤证据。
-- 支持 `status`、`header`、`field` 常用断言；`schema` 断言尚未实现，执行时会跳过。
+- 支持 `status`、`header`、`field` 常用断言；响应体字段支持传统点号路径和受限 JSONPath 子集（如 `$[0].id`、`$.data[0].id`）；`schema` 断言尚未实现，执行时会跳过。
 - 保存 Run、Scenario、Step、Assertion、事件和部分执行证据。
 - 通过 SSE 推送运行事件，支持 `Last-Event-ID` 断线续传。
 - 前端可查看 Run 列表、详情、步骤状态、断言结果、证据、取消结果和历史记录。
@@ -165,8 +176,9 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 - Node.js **20.19+** 或 **22.12+**、npm（前端使用 Vite 8）
 - PostgreSQL，以及一个可创建/迁移的本地数据库
 - 可选：DeepSeek API Key（只有需要真实模型分析/生成时才需要）
+- 可选：Docker，用于构建后端镜像
 
-本项目不包含 Docker 或 CI 配置。
+仓库包含后端 `Dockerfile` 和 `.dockerignore`，不包含 Docker Compose、Nginx 配置或 CI 流水线。生产环境的反向代理、前端静态文件和数据库网络需要自行配置。
 
 ### 1. 准备数据库
 
@@ -247,6 +259,17 @@ $env:AGENT_PLANNER = 'deterministic'
 ~~~
 
 真实 DeepSeek 路径和 live 测试默认不启用；分析器和 Planner 的选择由 `AGENT_ANALYZER`、`AGENT_PLANNER` 环境变量控制。
+
+### 可选：Docker 后端镜像
+
+仓库提供后端镜像定义；构建上下文是 `backend/`：
+
+~~~powershell
+cd backend
+docker build -t apipilot-backend .
+~~~
+
+容器运行时不要把宿主机专用的 `127.0.0.1` 数据库地址直接带进容器；请为容器提供可访问的 PostgreSQL 主机、数据库和认证配置。仓库没有附带 Compose、Nginx 或前端容器配置，生产部署需要自行补齐这些部分。
 
 ## 身份认证与 OAuth
 
@@ -460,6 +483,8 @@ npx vue-tsc -b --pretty false
 │   ├── alembic/versions/   # 数据库迁移
 │   ├── tests/              # pytest 测试与隔离测试库 fixture
 │   ├── scripts/            # 本地验证脚本与开发工具（谨慎运行）
+│   ├── Dockerfile          # 后端镜像构建
+│   ├── .dockerignore
 │   ├── main.py             # uvicorn 入口
 │   ├── alembic.ini
 │   ├── pyproject.toml
@@ -518,12 +543,13 @@ npx vue-tsc -b --pretty false
 - 完整 AI 分析 → 计划 → Run 的浏览器端到端流程仍缺少一个自动化的全链路验收；已有单元、集成、SSR 和局部浏览器 harness，但不等于整条链路已验收。
 - Run 启动恢复没有 executor lease/heartbeat；`running` Run 在进程崩溃后的识别仍有缺口。
 - `schema` 断言尚未实现，执行时会跳过。
+- OpenAPI 规范导入当前按 JSON 解析，暂不支持 YAML；请先将 YAML 文档转换为 JSON。
 - 计划审批/拒绝和名称/目标编辑尚无独立 Plan Approval API；Run 创建会再次检查请求中携带的审批状态，但服务端 `plan.status` 不是独立的长期审批记录。刷新后计划内容以服务端版本为准，本地名称/目标编辑不持久化。
 - Collections / Request History 仍只保存在浏览器 localStorage。
 - GitHub / Google OAuth 的真实 provider 端到端流程尚未在本次发布中手工验收；自动化测试验证了 state、PKCE、OIDC 声明校验、Cookie 和回调契约，provider 交换使用 mock。
 - official_cloud 游客限额是数据库计数上限，不是独立计费系统；游客会话创建本身仍建议由反向代理限速。
 - 报告中心暂无搜索、分页、模板或批量导出。
-- 尚未配置 Docker 或 CI 流水线。
+- 仓库提供后端 Dockerfile，但没有 Docker Compose、Nginx 配置或 CI 流水线；生产部署需要自行完成反向代理、前端静态文件和数据库网络配置。
 
 ## 许可证
 
@@ -537,7 +563,7 @@ MIT 是宽松许可证：你可以自由使用、修改、分发本项目，包�
 
 ## English Summary
 
-**ApiPilot** is a first-release AI-assisted API testing platform built with Vue 3, TypeScript, FastAPI, async SQLAlchemy, PostgreSQL, Alembic, and Authlib. It covers project and environment management, OpenAPI analysis, reviewable AI-generated test plans with versioned regeneration, deterministic run execution with multi-request flows and runtime variables, SSE run events, cancellation, a persisted PDF report center, in-app notifications, and a Learn Us documentation center in Chinese and English.
+**ApiPilot** is a first-release open-source API development and testing workspace with an optional online entry at https://x-apipilot.online/. It combines API debugging with AI-assisted OpenAPI analysis, reviewable test plans, deterministic run execution, and PDF reports. The stack is Vue 3, TypeScript, FastAPI, async SQLAlchemy, PostgreSQL, Alembic, and Authlib. It covers project and environment management, OpenAPI analysis, reviewable AI-generated test plans with versioned regeneration, deterministic run execution with multi-request flows and runtime variables, SSE run events, cancellation, a persisted PDF report center, in-app notifications, and a Learn Us documentation center in Chinese and English.
 
 Terminal runs can generate real PDF bytes on the server, store them in the `run_reports` PostgreSQL table together with metadata, and expose project-scoped list, inline-view, and download APIs. Reports use only persisted run data; they do not re-run requests or call the AI provider.
 

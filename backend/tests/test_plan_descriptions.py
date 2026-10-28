@@ -194,6 +194,7 @@ def test_a_design_scenario_level_description_does_not_leak_into_each_assert() ->
                         "description": {"text": "take the id"},
                         "endpoint_id": post.id,
                         "produces": "orderId",
+                        "source_path": "$.id",
                     },
                     {
                         "kind": "request",

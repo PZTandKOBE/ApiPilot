@@ -110,6 +110,12 @@ export interface ApiEndpoint {
   readonly responseStatuses: readonly number[]
   /** Documented response property names of the 2xx body, if any. */
   readonly responseProps: readonly string[]
+  /**
+   * Structured source paths from the 2xx response. Arrays are represented
+   * with `[0]` (for example `$[0].id`); nested objects use dotted segments.
+   * Optional for older mocked documents.
+   */
+  readonly responsePaths?: readonly string[]
 }
 
 export interface ApiResource {
@@ -285,6 +291,13 @@ export interface TestStep {
   readonly path: string | null
   /** Variable this step produces, for `extract` steps. */
   readonly produces: string | null
+  /**
+   * JSONPath-subset location of the value an extract reads, for example
+   * `$[0].id`. Independent of the target variable in `produces`.
+   */
+  readonly sourcePath?: string | null
+  /** Plan step key of the request whose response an extract reads. */
+  readonly sourceStepId?: string | null
   /** Variables this step consumes. */
   readonly consumes: readonly string[]
   /**

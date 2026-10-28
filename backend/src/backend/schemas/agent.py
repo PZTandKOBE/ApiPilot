@@ -138,6 +138,8 @@ class AgentStepResponse(Schema):
     method: str | None = None
     path: str | None = None
     produces: str | None = None
+    source_path: str | None = None
+    source_step_id: str | None = None
     body: Any | None = None
     body_present: bool = False
     consumes: list[str] = Field(default_factory=list)
@@ -239,6 +241,7 @@ class AgentEndpointResponse(Schema):
     constrained_body_props: list[str] = Field(default_factory=list)
     response_statuses: list[int] = Field(default_factory=list)
     response_props: list[str] = Field(default_factory=list)
+    response_paths: list[str] = Field(default_factory=list)
 
 
 class AgentResourceResponse(Schema):

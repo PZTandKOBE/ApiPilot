@@ -280,6 +280,7 @@ def _design() -> agent_analyzer.PlanDesign:
         }
     )
     design.scenarios[0].steps[1].produces = "orderId"
+    design.scenarios[0].steps[1].source_path = "$.id"
     design.scenarios[0].steps[2].consumes = ["orderId"]
     return design
 
@@ -309,6 +310,8 @@ def test_the_model_planner_splits_the_order_lifecycle_assertions() -> None:
     assert (create.method, create.path) == ("POST", "/orders")
     assert create.body_present is True
     assert (extract.kind, extract.produces) == ("extract", "orderId")
+    assert extract.source_path == "$.id"
+    assert extract.source_step_id == create.id
     assert (read.method, read.path) == ("GET", "/orders/{{orderId}}")
     assert read.body_present is False and read.body is None
     assert create_assert.id != read_assert.id

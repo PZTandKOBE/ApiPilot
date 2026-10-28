@@ -42,6 +42,7 @@ from datetime import datetime, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from backend.schemas.run import PlanAssertion, PlanPayload, PlanScenario, PlanStep
+from backend.services.json_path import PathSyntaxError, parse_path
 from backend.services.spec_identity import slugify
 
 __all__ = [
@@ -217,6 +218,7 @@ class ApiEndpointFacts:
     constrained_body_props: tuple[str, ...]
     response_statuses: tuple[int, ...]
     response_props: tuple[str, ...]
+    response_paths: tuple[str, ...] = ()
 
     @property
     def label(self) -> str:
@@ -549,7 +551,181 @@ def _body_facts(schema: dict[str, Any] | None) -> tuple[tuple[str, ...], tuple[s
     return required, tuple(constrained)
 
 
-def _response_facts(operation: dict[str, Any]) -> tuple[tuple[int, ...], tuple[str, ...]]:
+_MAX_SCHEMA_DEPTH = 24
+_MAX_SCHEMA_PATHS = 256
+
+
+def _resolve_json_pointer(document: Mapping[str, Any], ref: str) -> Any:
+    """Resolve one local JSON Reference, without falling back to the network."""
+    if not ref.startswith("#/"):
+        return None
+
+    current: Any = document
+
+    for raw_segment in ref[2:].split("/"):
+        segment = raw_segment.replace("~1", "/").replace("~0", "~")
+        record = _as_record(current)
+        if record is not None:
+            if segment not in record:
+                return None
+            current = record[segment]
+            continue
+        if isinstance(current, list) and segment.isdigit():
+            index = int(segment)
+            if index >= len(current):
+                return None
+            current = current[index]
+            continue
+        return None
+
+    return current
+
+
+def _resolve_schema(
+    document: Mapping[str, Any],
+    node: Any,
+    *,
+    seen: frozenset[str] = frozenset(),
+    depth: int = 0,
+) -> dict[str, Any] | None:
+    """Resolve local $ref chains, with a hard stop for cycles and bad refs."""
+    if depth > _MAX_SCHEMA_DEPTH:
+        return None
+
+    record = _as_record(node)
+    if record is None:
+        return None
+
+    ref = _as_str(record.get("$ref"))
+    if ref is None:
+        return record
+    if ref in seen:
+        return None
+
+    target = _resolve_json_pointer(document, ref)
+    if target is None:
+        return None
+
+    return _resolve_schema(
+        document,
+        target,
+        seen=seen | {ref},
+        depth=depth + 1,
+    )
+
+
+def _schema_properties(
+    document: Mapping[str, Any],
+    schema: Mapping[str, Any],
+    *,
+    seen: frozenset[str],
+    depth: int,
+) -> dict[str, Any]:
+    """The properties of an object schema, including a simple allOf merge."""
+    properties = _as_record(schema.get("properties")) or {}
+
+    for key in ("allOf", "oneOf", "anyOf"):
+        variants = schema.get(key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            resolved = _resolve_schema(document, variant, seen=seen, depth=depth + 1)
+            if resolved is None:
+                continue
+            nested = _as_record(resolved.get("properties"))
+            if nested is not None:
+                properties = {**nested, **properties}
+            if key == "allOf":
+                continue
+            break
+
+    return properties
+
+
+def _collect_schema_paths(
+    document: Mapping[str, Any],
+    schema: Any,
+    *,
+    base: str = "$",
+    depth: int = 0,
+    seen: frozenset[str] = frozenset(),
+    output: list[str] | None = None,
+) -> list[str]:
+    """Names of leaf paths the response schema can provide.
+
+    The path starts with a dollar root.  An array contributes [0] at the point
+    where it is encountered, so a list response yields $[0].id and a nested
+    list under data yields $.data[0].id.
+    """
+    if output is None:
+        output = []
+
+    if depth > _MAX_SCHEMA_DEPTH or len(output) >= _MAX_SCHEMA_PATHS:
+        return output
+
+    raw_ref = _as_str((_as_record(schema) or {}).get("$ref"))
+    effective_seen = seen | {raw_ref} if raw_ref is not None else seen
+
+    resolved = _resolve_schema(document, schema, seen=seen, depth=depth)
+    if resolved is None:
+        return output
+
+    properties = _schema_properties(document, resolved, seen=effective_seen, depth=depth)
+    for name, definition in properties.items():
+        child = base + "." + name
+        output.append(child)
+        _collect_schema_paths(
+            document,
+            definition,
+            base=child,
+            depth=depth + 1,
+            seen=effective_seen,
+            output=output,
+        )
+
+    array_items = resolved.get("items")
+    if array_items is not None or _as_str(resolved.get("type")) == "array":
+        item_path = base + "[0]"
+        item_schema = _resolve_schema(
+            document,
+            array_items,
+            seen=effective_seen,
+            depth=depth + 1,
+        )
+        if item_schema is None:
+            return output
+        item_properties = _schema_properties(
+            document,
+            item_schema,
+            seen=effective_seen,
+            depth=depth + 1,
+        )
+        if item_properties:
+            _collect_schema_paths(
+                document,
+                item_schema,
+                base=item_path,
+                depth=depth + 1,
+                seen=effective_seen,
+                output=output,
+            )
+        else:
+            output.append(item_path)
+
+    return output
+
+
+def _response_facts(
+    document: Mapping[str, Any], operation: dict[str, Any]
+) -> tuple[tuple[int, ...], tuple[str, ...], tuple[str, ...]]:
+    """The success statuses and the response's root/item field paths.
+
+    response_props keeps its original meaning (properties of an object body)
+    for existing token/id readers.  response_paths is the structured view the
+    Agent and Extract use: it records arrays with [0] and nested objects with
+    dotted segments, so a field named id is not indistinguishable from a field
+    named postId.
+    """
     responses = _as_record(operation.get("responses")) or {}
 
     statuses = sorted(
@@ -557,22 +733,30 @@ def _response_facts(operation: dict[str, Any]) -> tuple[tuple[int, ...], tuple[s
     )
 
     props: tuple[str, ...] = ()
+    paths: tuple[str, ...] = ()
     for code in statuses:
         if not 200 <= code < 300:
             continue
-        response = _as_record(responses.get(str(code)))
+        response = _resolve_schema(document, responses.get(str(code)))
         if response is None:
             continue
         content = _as_record(response.get("content"))
         media = _as_record(content.get("application/json")) if content is not None else None
-        schema = _as_record(media.get("schema")) if media is not None else None
+        schema = media.get("schema") if media is not None else None
         if schema is None:
             continue
-        props = tuple((_as_record(schema.get("properties")) or {}).keys())
-        if props:
+
+        resolved = _resolve_schema(document, schema)
+        if resolved is None:
+            continue
+
+        props = tuple((_as_record(resolved.get("properties")) or {}).keys())
+        collected = _collect_schema_paths(document, resolved)
+        paths = tuple(dict.fromkeys(collected))
+        if props or paths:
             break
 
-    return tuple(statuses), props
+    return tuple(statuses), props, paths
 
 
 def _security_facts(
@@ -664,7 +848,7 @@ def _extract_endpoints(
             required, constrained = _body_facts(
                 _body_schema(document, operation_record, format_)
             )
-            statuses, props = _response_facts(operation_record)
+            statuses, props, paths = _response_facts(document, operation_record)
 
             requires_auth, security_declared, security_schemes, security_optional = (
                 _security_facts(document, operation_record)
@@ -687,6 +871,7 @@ def _extract_endpoints(
                     request_body=_body_schema(document, operation_record, format_),
                     response_statuses=statuses,
                     response_props=props,
+                    response_paths=paths,
                 )
             )
 
@@ -1192,7 +1377,22 @@ def extract_step_description(endpoint: ApiEndpointFacts, variable: str) -> dict[
     )
 
 
-def _extract_step(index: int, endpoint: ApiEndpointFacts, variable: str) -> PlanStep:
+def response_path_for_field(endpoint: ApiEndpointFacts, field: str) -> str:
+    """The first parsed response path whose final segment is this field."""
+    for path in endpoint.response_paths:
+        if path == field or path.endswith("." + field):
+            return path
+    return "$." + field
+
+
+def _extract_step(
+    index: int,
+    endpoint: ApiEndpointFacts,
+    variable: str,
+    *,
+    source_step_id: str | None = None,
+    source_path: str | None = None,
+) -> PlanStep:
     return PlanStep(
         id=extract_step_key(endpoint.id, variable),
         index=index,
@@ -1203,6 +1403,8 @@ def _extract_step(index: int, endpoint: ApiEndpointFacts, variable: str) -> Plan
         path=None,
         produces=variable,
         consumes=[],
+        source_path=source_path or response_path_for_field(endpoint, variable),
+        source_step_id=source_step_id,
     )
 
 
@@ -1376,7 +1578,13 @@ def _authentication_scenario(understanding: Understanding) -> PlanScenario | Non
     token_field = authentication.token_field or "token"
 
     login = _request_step(0, source, "console.aiTest.step.login", {}, [])
-    token = _extract_step(1, source, token_field)
+    token = _extract_step(
+        1,
+        source,
+        token_field,
+        source_step_id=login.id,
+        source_path=response_path_for_field(source, token_field),
+    )
     identity_step = _request_step(
         2, identity, "console.aiTest.step.fetchIdentity", {}, [token_field]
     )
@@ -1482,7 +1690,13 @@ def _lifecycle_scenarios(understanding: Understanding) -> list[PlanScenario]:
         create_step = _request_step(
             0, create, "console.aiTest.step.createResource", {"resource": resource}, []
         )
-        extract = _extract_step(1, create, dependency.binding)
+        extract = _extract_step(
+            1,
+            create,
+            dependency.binding,
+            source_step_id=create_step.id,
+            source_path=response_path_for_field(create, id_field),
+        )
         read_step = _request_step(
             2,
             read,
@@ -1682,8 +1896,11 @@ def validate_plan(
             issue("assertion-keys", f"scenario {scenario.id!r} has duplicate assertion ids")
 
         produced: set[str] = set()
+        request_steps: dict[str, str] = {}
         for step in scenario.steps:
-            _validate_step(step, scenario.id, produced, issue)
+            _validate_step(step, scenario.id, produced, request_steps, issue)
+            if step.kind == "request":
+                request_steps[step.id] = step.id
             if step.kind == "extract" and step.produces:
                 produced.add(step.produces)
 
@@ -1698,7 +1915,11 @@ def validate_plan(
 
 
 def _validate_step(
-    step: PlanStep, scenario_id: str, produced: set[str], issue: Any
+    step: PlanStep,
+    scenario_id: str,
+    produced: set[str],
+    request_steps: Mapping[str, str],
+    issue: Any,
 ) -> None:
     where = f"scenario {scenario_id!r} step {step.id!r}"
 
@@ -1723,6 +1944,25 @@ def _validate_step(
     if step.kind == "extract":
         if not (step.produces or "").strip():
             issue("extract-variable", f"{where} extracts into no variable")
+
+        source_path = (step.source_path or "").strip()
+        if source_path == "":
+            if step.source_step_id is not None:
+                issue("extract-source", f"{where} names a source step without a source path")
+            return
+
+        try:
+            parse_path(source_path)
+        except PathSyntaxError as exc:
+            issue("extract-source-path", f"{where} has an invalid source path: {exc}")
+
+        if step.source_step_id is None:
+            issue("extract-source", f"{where} names no source response step")
+        elif step.source_step_id not in request_steps:
+            issue(
+                "extract-source",
+                f"{where} reads response step {step.source_step_id!r} that has not run",
+            )
         return
 
     if step.kind == "assert":

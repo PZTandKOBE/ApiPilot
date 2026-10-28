@@ -73,6 +73,12 @@ const KIND_COLOR = computed(() => {
         class="mt-1 flex flex-wrap items-center gap-1.5"
       >
         <span
+          v-if="step.sourcePath"
+          class="rounded-md border border-[var(--console-border)] px-1.5 py-0.5 font-mono text-[10px] text-[var(--console-text-muted)]"
+        >
+          {{ step.sourcePath }}
+        </span>
+        <span
           v-if="step.produces !== null"
           class="rounded-md px-1.5 py-0.5 font-mono text-[10px]"
           :style="{

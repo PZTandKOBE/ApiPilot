@@ -262,6 +262,7 @@ def test_the_model_lifecycle_design_passes_both_paths() -> None:
                         },
                         "endpoint_id": post.id,
                         "produces": "orderId",
+                        "source_path": "$.id",
                     },
                     {
                         "kind": "request",

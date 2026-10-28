@@ -91,10 +91,14 @@ const requestStep = (
   }
 }
 
+const responsePathForField = (endpoint: ApiEndpoint, field: string): string =>
+  endpoint.responsePaths?.find((path) => path.endsWith('.' + field)) ?? '$.' + field
+
 const extractStep = (
   context: StepContext,
   endpoint: ApiEndpoint,
   variable: string,
+  sourcePath: string = responsePathForField(endpoint, variable),
 ): TestStep => {
   const index = take(context)
   return {
@@ -106,6 +110,7 @@ const extractStep = (
     method: null,
     path: null,
     produces: variable,
+    sourcePath,
     consumes: [],
   }
 }
@@ -180,7 +185,7 @@ const buildAuthenticationScenario = (
     riskLevel: 'high',
     steps: [
       requestStep(context, tokenSource, 'console.aiTest.step.login', {}, []),
-      extractStep(context, tokenSource, tokenField),
+      extractStep(context, tokenSource, tokenField, responsePathForField(tokenSource, tokenField)),
       requestStep(context, identity, 'console.aiTest.step.fetchIdentity', {}, [tokenField]),
       assertStep(context),
     ],
@@ -233,7 +238,12 @@ const buildLifecycleScenario = (
         { resource },
         [],
       ),
-      extractStep(context, create, read.pathParams[0] ?? idField),
+      extractStep(
+        context,
+        create,
+        read.pathParams[0] ?? idField,
+        responsePathForField(create, idField),
+      ),
       requestStep(
         context,
         read,

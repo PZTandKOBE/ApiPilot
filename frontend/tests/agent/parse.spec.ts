@@ -297,3 +297,79 @@ describe('determinism', () => {
     expect(other.spec.id).not.toBe(parsed.spec.id)
   })
 })
+
+
+describe('response source paths', () => {
+  it('keeps array item properties through a $ref', async () => {
+    const document = {
+      openapi: '3.0.3',
+      info: { title: 'Posts', version: '1' },
+      paths: {
+        '/posts': {
+          get: {
+            responses: {
+              200: {
+                description: 'OK',
+                content: {
+                  'application/json': {
+                    schema: {
+                      type: 'array',
+                      items: { $ref: '#/components/schemas/Post' },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        '/posts/{postId}': {
+          get: {
+            responses: {
+              200: {
+                description: 'OK',
+                content: {
+                  'application/json': {
+                    schema: { $ref: '#/components/schemas/Post' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          Post: {
+            type: 'object',
+            properties: {
+              id: { type: 'integer' },
+              userId: { type: 'integer' },
+              owner: { $ref: '#/components/schemas/User' },
+            },
+          },
+          User: {
+            type: 'object',
+            properties: { name: { type: 'string' } },
+          },
+        },
+      },
+    }
+
+    const parsed = await agent.parseSpec({
+      projectId: PROJECT,
+      filename: 'posts.json',
+      content: JSON.stringify(document),
+      source: 'upload',
+    })
+    const posts = parsed.endpoints.find((endpoint) => endpoint.path === '/posts')
+    const item = parsed.endpoints.find((endpoint) => endpoint.path === '/posts/{postId}')
+
+    expect(posts?.responseProps).toEqual([])
+    expect(posts?.responsePaths).toEqual(
+      expect.arrayContaining(['$[0].id', '$[0].userId', '$[0].owner.name']),
+    )
+    expect(item?.responsePaths).toEqual(
+      expect.arrayContaining(['$.id', '$.owner.name']),
+    )
+  })
+})

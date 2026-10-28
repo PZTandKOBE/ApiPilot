@@ -72,6 +72,7 @@ from backend.db.models.result import (
     RunStep,
     TestRun,
 )
+from backend.services import json_path
 from backend.services.runs import _as_text, _sse_timestamp, append_run_event, run_failure_dict
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,8 @@ class _Step:
     produces: str | None
     body: Any | None = None
     body_present: bool = False
+    source_path: str | None = None
+    source_step_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -444,6 +447,42 @@ def find_value(document: Any, name: str, *, depth: int = 4) -> Any:
     return _MISSING
 
 
+def _assertion_json_path(target: str) -> str | None:
+    """The JSONPath to use for a field assertion, or None for a legacy name.
+
+    The plan writes a body field as body.<path>.  A JSONPath source starts
+    with $ after that prefix (for example body.$[0].id); a bracketed path
+    without the dollar is normalised too so a planner that omitted the root
+    marker is still understood.  A plain dotted name such as body.id remains a
+    legacy field lookup.
+    """
+    raw = target.strip()
+    if raw.startswith("body."):
+        raw = raw[len("body.") :]
+    if raw.startswith("$"):
+        return raw
+    if "[" in raw:
+        return "$" + raw if raw.startswith("[") else "$." + raw
+    return None
+
+
+def _resolve_assertion_json_path(
+    response: _Response, target: str
+) -> tuple[bool, Any, str | None]:
+    """Resolve an explicit assertion path, never falling back to a name lookup."""
+    path = _assertion_json_path(target)
+    if path is None:
+        raise ValueError("not a JSONPath assertion")
+
+    if response.json is None:
+        return False, None, "the response body is not JSON"
+
+    resolution = json_path.resolve_path(response.json, path)
+    if not resolution.found:
+        return False, None, "the response body did not resolve " + path + ": " + resolution.reason
+    return True, resolution.value, None
+
+
 def evaluate_assertion(assertion: _Assertion, response: _Response) -> tuple[str, str | None, str | None]:
     """Judge one assertion: ``(status, actual, reason)``.
 
@@ -467,6 +506,22 @@ def evaluate_assertion(assertion: _Assertion, response: _Response) -> tuple[str,
         return _verdict(actual, assertion.expected), actual, None
 
     if assertion.kind == "field":
+        path = _assertion_json_path(assertion.target)
+
+        if path is not None:
+            found, value, reason = _resolve_assertion_json_path(
+                response, assertion.target
+            )
+            if not found:
+                return FAILED, None, reason
+
+            if assertion.expected == PRESENT_SENTINEL:
+                return PASSED, _as_text(value), None
+
+            return _verdict(_as_text(value), assertion.expected), _as_text(value), None
+
+        # Legacy plans write a dotted field name, not a JSONPath.  Preserve the
+        # old dotted walk (including its generic missing-field sentence) exactly.
         found = response.field(assertion.target)
 
         if found is _MISSING:
@@ -612,6 +667,40 @@ async def _load_produced(session: AsyncSession, step_ids: list[uuid.UUID]) -> di
     return {step_id: produces for step_id, produces in rows if produces is not None}
 
 
+async def _load_sources(
+    session: AsyncSession, step_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, tuple[str | None, str | None]]:
+    """The Extract source path and source request step, from the plan row.
+
+    The run snapshot does not carry either field; like produces, they live on
+    the plan step and are reached through source_step_id.  A legacy plan row has
+    no such config and returns no source tuple, which keeps the old lookup path
+    available without inventing a source.
+    """
+    if not step_ids:
+        return {}
+
+    rows = (
+        await session.execute(
+            select(RunStep.id, TestStep.config)
+            .join(TestStep, TestStep.id == RunStep.source_step_id)
+            .where(RunStep.id.in_(step_ids))
+        )
+    ).all()
+
+    sources: dict[uuid.UUID, tuple[str | None, str | None]] = {}
+    for step_id, config in rows:
+        if not isinstance(config, dict):
+            continue
+        source_path = config.get("sourcePath")
+        source_step = config.get("sourceStepId")
+        path = source_path if isinstance(source_path, str) and source_path.strip() else None
+        key = source_step if isinstance(source_step, str) and source_step.strip() else None
+        if path is not None or key is not None:
+            sources[step_id] = (path, key)
+    return sources
+
+
 async def _load_bodies(
     session: AsyncSession, step_ids: list[uuid.UUID]
 ) -> dict[uuid.UUID, tuple[Any, bool]]:
@@ -671,6 +760,8 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
                 RunStep.step_type,
                 RunStep.method,
                 RunStep.path,
+                RunStep.source_path,
+                RunStep.source_step_key,
             )
             .where(RunStep.run_scenario_id.in_(scenario_ids))
             .order_by(RunStep.run_scenario_id, RunStep.sort_order, RunStep.step_key)
@@ -695,6 +786,7 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
 
     produced = await _load_produced(session, [row.id for row in step_rows])
     bodies = await _load_bodies(session, [row.id for row in step_rows])
+    sources = await _load_sources(session, [row.id for row in step_rows])
 
     steps_by_scenario: dict[uuid.UUID, list[_Step]] = {}
     for row in step_rows:
@@ -708,6 +800,8 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
                 produces=produced.get(row.id),
                 body=bodies.get(row.id, (None, False))[0],
                 body_present=bodies.get(row.id, (None, False))[1],
+                source_path=row.source_path or sources.get(row.id, (None, None))[0],
+                source_step_key=row.source_step_key or sources.get(row.id, (None, None))[1],
             )
         )
 
@@ -973,6 +1067,7 @@ async def _execute_step(
     auth: tuple[str, Mapping[str, Any]] | None,
     client: httpx.AsyncClient,
     response: _Response | None,
+    source_response: _Response | None = None,
 ) -> tuple[_StepOutcome | None, _Response | None, list[dict[str, Any]]]:
     """Run one step: ``(failure, response, evidence)``.
 
@@ -982,7 +1077,26 @@ async def _execute_step(
     like any other step and does nothing of its own.
     """
     if step.kind == "extract":
-        return _extract(step=step, context=context, response=response)
+        if step.source_step_key is not None and source_response is None:
+            return (
+                _StepOutcome(
+                    code=EXTRACT_FAILED,
+                    detail=(
+                        "the source response step " + step.source_step_key
+                        + " did not produce a response"
+                    ),
+                ),
+                response,
+                [],
+            )
+        outcome, _, evidence = _extract(
+            step=step,
+            context=context,
+            response=source_response if step.source_step_key is not None else response,
+        )
+        # The scenario's current response stays the response of the most recent
+        # request; an Extract reading an earlier response must not replace it.
+        return outcome, response, evidence
 
     if step.kind != "request":
         return None, response, []
@@ -1106,17 +1220,35 @@ def _extract(
             evidence,
         )
 
-    found = find_value(response.json, step.produces)
+    if step.source_path is not None:
+        resolution = json_path.resolve_path(response.json, step.source_path)
+        if not resolution.found:
+            return (
+                _StepOutcome(
+                    code=EXTRACT_FAILED,
+                    detail=(
+                        "extract source path " + step.source_path
+                        + " did not resolve: " + resolution.reason
+                    ),
+                ),
+                response,
+                evidence,
+            )
+        found = resolution.value
+    else:
+        # Legacy plans did not carry a source path.  Preserve their old
+        # name-based lookup explicitly instead of silently reinterpreting them.
+        found = find_value(response.json, step.produces)
 
-    if found is _MISSING:
-        return (
-            _StepOutcome(
-                code=EXTRACT_FAILED,
-                detail="the response did not carry " + step.produces,
-            ),
-            response,
-            evidence,
-        )
+        if found is _MISSING:
+            return (
+                _StepOutcome(
+                    code=EXTRACT_FAILED,
+                    detail="the response did not carry " + step.produces,
+                ),
+                response,
+                evidence,
+            )
 
     context.runtime[step.produces] = _as_text(found)
 
@@ -1260,6 +1392,7 @@ async def _run_scenario(
             grouped.setdefault(owner, []).append(assertion)
 
     response: _Response | None = None
+    responses_by_step: dict[str, _Response] = {}
     failure: _StepOutcome | None = None
     failed_step: _Step | None = None
     started_any = False
@@ -1293,13 +1426,21 @@ async def _run_scenario(
             return _ScenarioOutcome(status=SKIPPED)
 
         clock = time.monotonic()
+        source_response = (
+            responses_by_step.get(step.source_step_key)
+            if step.kind == "extract" and step.source_step_key is not None
+            else None
+        )
         outcome, response, evidence = await _execute_step(
             step=step,
             context=step_context,
             auth=auth,
             client=client,
             response=response,
+            source_response=source_response,
         )
+        if step.kind == "request" and response is not None:
+            responses_by_step[step.key] = response
         duration_ms = max(0, round((time.monotonic() - clock) * 1000))
         finished_at = datetime.now(timezone.utc)
 

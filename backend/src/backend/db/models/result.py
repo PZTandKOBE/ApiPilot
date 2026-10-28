@@ -417,6 +417,10 @@ class RunStep(UUIDPrimaryKeyMixin, Base):
     )
     method: Mapped[str | None] = mapped_column(String(20), nullable=True)
     path: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # Extract-only snapshot fields.  They live on the run row, not only on the
+    # plan row, so a later plan edit cannot rewrite what an earlier run read.
+    source_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_step_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending", server_default=text("'pending'")

@@ -51,6 +51,7 @@ from backend.schemas.run import (
 )
 from backend.services import agent_plan
 from backend.services.agent_plan import PlanPipelineError
+from backend.services.json_path import PathSyntaxError, parse_path
 from backend.services.llm import (
     LLMError,
     LLMResult,
@@ -422,6 +423,7 @@ def specification_facts(
                     "constrainedBodyProps": list(endpoint.constrained_body_props),
                     "responseStatuses": list(endpoint.response_statuses),
                     "responseProps": list(endpoint.response_props),
+                    "responsePaths": list(endpoint.response_paths),
                 }
                 for endpoint in parsed.endpoints
             ],
@@ -488,6 +490,7 @@ class PlanStepDesign(Schema):
     path: str | None = None
     produces: str | None = None
     consumes: list[str] = Field(default_factory=list)
+    source_path: str | None = None
 
 
 class PlanAssertionDesign(Schema):
@@ -670,6 +673,7 @@ def understanding_facts(
                         "constrainedBodyProps": list(endpoint.constrained_body_props),
                         "responseStatuses": list(endpoint.response_statuses),
                         "responseProps": list(endpoint.response_props),
+                        "responsePaths": list(endpoint.response_paths),
                     }
                     for endpoint in understanding.endpoints
                 ],
@@ -1054,6 +1058,9 @@ def plan_design_issues(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> lis
         if not scenario.steps:
             issues.append(f"{where} has no steps")
 
+        called_before: set[str] = set()
+        last_request_endpoint: str | None = None
+
         for index, step in enumerate(scenario.steps):
             spot = f"{where} step {index}"
 
@@ -1088,9 +1095,29 @@ def plan_design_issues(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> lis
                         issues.append(
                             f"{spot} says {step.path!r} where the document says {endpoint.path!r}"
                         )
+
+                called_before.add(endpoint.id)
+                last_request_endpoint = endpoint.id
             elif step.kind == "extract":
                 if not (step.produces or "").strip():
                     issues.append(f"{spot} extracts into no variable")
+
+                source_path = (step.source_path or "").strip()
+                if source_path == "":
+                    issues.append(f"{spot} extracts from no source path")
+                else:
+                    try:
+                        parse_path(source_path)
+                    except PathSyntaxError as exc:
+                        issues.append(f"{spot} has an invalid source path: {exc}")
+
+                source_endpoint = step.endpoint_id or last_request_endpoint
+                if source_endpoint is None:
+                    issues.append(f"{spot} has no preceding request response")
+                elif source_endpoint not in called_before:
+                    issues.append(
+                        f"{spot} reads {source_endpoint!r} before that request is made"
+                    )
             elif step.endpoint_id is not None or step.method is not None or step.path is not None:
                 issues.append(f"{spot} is an assert step that names a request")
 
@@ -1215,6 +1242,11 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
             if step.kind == "extract":
                 owner = endpoints.get(step.endpoint_id or "") or subject
                 prefix = owner.id if owner is not None else "extract"
+                source_step_id = (
+                    request_steps.get(step.endpoint_id or "")
+                    if step.endpoint_id
+                    else subject_step_id
+                )
 
                 steps.append(
                     PlanStep(
@@ -1237,6 +1269,8 @@ def design_to_plan(design: PlanDesign, parsed: agent_plan.ParsedSpec) -> PlanPay
                         path=None,
                         produces=step.produces,
                         consumes=list(step.consumes),
+                        source_path=step.source_path,
+                        source_step_id=source_step_id,
                     )
                 )
                 continue

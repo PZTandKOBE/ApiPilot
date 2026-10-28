@@ -307,16 +307,88 @@ const bodySchemaOf = (
   return null
 }
 
+const resolveSchema = (
+  document: Record<string, unknown>,
+  node: unknown,
+  seen: ReadonlySet<string> = new Set<string>(),
+  depth = 0,
+): Record<string, unknown> | null => {
+  if (depth > 24 || !isRecord(node)) return null
+
+  const ref = asString(node.$ref)
+  if (ref === null) return node
+  if (seen.has(ref)) return null
+
+  const resolved = resolveRef(document, { $ref: ref })
+  if (resolved === null) return null
+
+  return resolveSchema(document, resolved, new Set([...seen, ref]), depth + 1)
+}
+
+const collectSchemaPaths = (
+  document: Record<string, unknown>,
+  schema: unknown,
+  base = '$',
+  depth = 0,
+  seen: ReadonlySet<string> = new Set<string>(),
+  output: string[] = [],
+): string[] => {
+  if (depth > 24 || output.length >= 256) return output
+
+  const resolved = resolveSchema(document, schema, seen, depth)
+  if (resolved === null) return output
+
+  let properties = isRecord(resolved.properties) ? resolved.properties : {}
+  for (const variant of [resolved.allOf, resolved.oneOf, resolved.anyOf]) {
+    if (!Array.isArray(variant)) continue
+    for (const item of variant) {
+      const nested = resolveSchema(document, item, seen, depth + 1)
+      if (nested !== null && isRecord(nested.properties)) {
+        properties = { ...nested.properties, ...properties }
+      }
+      break
+    }
+  }
+
+  for (const [name, definition] of Object.entries(properties)) {
+    const child = base + '.' + name
+    output.push(child)
+    collectSchemaPaths(document, definition, child, depth + 1, seen, output)
+  }
+
+  const items = resolved.items
+  if (items !== undefined || resolved.type === 'array') {
+    const itemPath = base + '[0]'
+    const itemSchema = resolveSchema(document, items, seen, depth + 1)
+    if (itemSchema === null) return output
+    const itemProperties = isRecord(itemSchema.properties) ? itemSchema.properties : {}
+    if (Object.keys(itemProperties).length > 0) {
+      collectSchemaPaths(document, itemSchema, itemPath, depth + 1, seen, output)
+    } else {
+      output.push(itemPath)
+    }
+  }
+
+  return output
+}
+
 const responseInfoOf = (
   document: Record<string, unknown>,
   operation: Record<string, unknown>,
   format: SpecFormat,
-): { readonly statuses: readonly number[]; readonly props: readonly string[] } => {
+): {
+  readonly statuses: readonly number[]
+  readonly props: readonly string[]
+  readonly paths: readonly string[]
+} => {
   const responses = operation.responses
-  if (!isRecord(responses)) return { statuses: [], props: [] }
+  if (!isRecord(responses)) return { statuses: [], props: [], paths: [] }
 
   const statuses: number[] = []
-  const props: string[] = []
+  let props: string[] = []
+  let paths: string[] = []
+  let propsFound = false
+  let pathsFound = false
 
   for (const [key, value] of Object.entries(responses)) {
     const status = Number.parseInt(key, 10)
@@ -325,7 +397,7 @@ const responseInfoOf = (
 
     // Only the first success response describes the resource; error bodies are
     // an envelope, not the payload.
-    if (status < 200 || status >= 300 || props.length > 0) continue
+    if (status < 200 || status >= 300 || (propsFound && pathsFound)) continue
 
     const response = resolveRef(document, value)
     if (response === null) continue
@@ -337,13 +409,27 @@ const responseInfoOf = (
             : undefined)
         : response.schema
 
-    const resolved = resolveRef(document, schemaNode)
-    if (resolved !== null && isRecord(resolved.properties)) {
-      props.push(...Object.keys(resolved.properties))
+    const resolved = resolveSchema(document, schemaNode)
+    if (resolved === null) continue
+
+    if (!propsFound) {
+      const nextProps = isRecord(resolved.properties) ? Object.keys(resolved.properties) : []
+      if (nextProps.length > 0) {
+        props = nextProps
+        propsFound = true
+      }
+    }
+
+    if (!pathsFound) {
+      const nextPaths = [...new Set(collectSchemaPaths(document, resolved))]
+      if (nextPaths.length > 0) {
+        paths = nextPaths
+        pathsFound = true
+      }
     }
   }
 
-  return { statuses, props }
+  return { statuses, props, paths }
 }
 
 const isProtected = (
@@ -415,6 +501,7 @@ const extractEndpoints = (
         constrainedBodyProps: body.constrained,
         responseStatuses: [...new Set(response.statuses)].sort((a, b) => a - b),
         responseProps: response.props,
+        responsePaths: response.paths,
       })
     }
   }

@@ -62,7 +62,7 @@ A step is one of three kinds:
 | `kind` | what it does | what it must carry |
 |---|---|---|
 | `request` | calls one endpoint | `endpointId`, and the endpoint's `method` and `path` copied exactly as the understanding reports them |
-| `extract` | lifts one value out of the response just received into a variable | `produces`: the variable's name |
+| `extract` | lifts one value out of a request response into a variable | `produces`: the variable's name; `sourcePath`: where the value lives in the response body |
 | `assert` | marks the point where the scenario's assertions are checked | nothing else |
 
 An assertion reads one value out of a response:
@@ -99,7 +99,13 @@ makes; leave the id out and it reads the scenario's last request.
    an earlier step in the same scenario produced, or one the executor is given
    when the plan runs (a path parameter, declared in `consumes`). An assertion
    may only read a response produced by a request that already ran in that
-   scenario.
+   scenario. An Extract has two independent values:
+   * `produces` is the runtime variable name, such as `postId`.
+   * `sourcePath` is the place in the source response body, such as `$.id` or
+     `$[0].id`. It is selected from the endpoint's `responsePaths`; it is not
+     the variable name and it is not a guess. The source request is the request
+     immediately before the Extract unless you name the source request through
+     `endpointId`.
 4. **Do not design around capabilities this executor does not have.** It sends
    no request body and no query string, and it cannot check a schema. If a risk
    is only testable that way, it belongs in the understanding as a risk — do not
@@ -128,8 +134,11 @@ describe is rejected.
 
 # Never
 
-* never emit an `id`, an `index`, a status, a source or a timestamp: the
-  runtime owns all of them;
+* never emit an `id`, an `index`, a status, a database key or a timestamp: the
+  runtime owns all of them. `sourcePath` is not a runtime-owned id; it is a
+  response location and must be emitted for every Extract;
+* never use a response field only because its name resembles the target variable.
+  If the understanding does not provide a usable source path, do not invent one;
 * never call an endpoint, describe how to call one in prose, or ask for a
   request to be made;
 * never approve, reject or prioritise anything on a human's behalf;

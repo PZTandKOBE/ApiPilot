@@ -43,6 +43,7 @@ from backend.db.models.project import Environment
 from backend.db.models.result import RunAssertion, RunEvent, RunScenario, RunStep
 from backend.db.models.result import TestRun as _TestRun
 from backend.schemas.run import RunCreateRequest
+from backend.services import agent as agent_service
 from backend.services import run_executor, runs
 from backend.services.agent import derive_spec_identity, probe_document
 
@@ -264,6 +265,10 @@ class _RecordingClient(httpx.AsyncClient):
         type(self).sent.append(request)
         if request.method == "GET" and request.url.path == "/orders/order_1":
             return httpx.Response(200, json={"orderId": "order_1", "status": "open"})
+        if request.method == "GET" and request.url.path == "/posts":
+            return httpx.Response(200, json=[{"id": 101, "userId": 8, "title": "example"}])
+        if request.method == "GET" and request.url.path == "/posts/101":
+            return httpx.Response(200, json={"id": 101, "userId": 8, "title": "example"})
         if request.method == "POST" and request.url.path == "/orders":
             return httpx.Response(201, json={"id": "order_2"})
         return httpx.Response(404, json={"error": "unexpected target"})
@@ -845,3 +850,74 @@ async def test_a_failed_assertion_fails_the_step_and_the_run(
     assert "assertion.completed" in kinds
     assert [event.seq for event in events] == list(range(1, len(events) + 1))
     assert all(kind in FROZEN_EVENT_TYPES for kind in kinds)
+
+# --------------------------------------------------------------------------- #
+# 6. An explicit Extract source path survives the snapshot and feeds the next URL
+# --------------------------------------------------------------------------- #
+
+
+async def test_extract_source_path_maps_id_to_post_id_across_the_run_snapshot(
+    fixtures, stack, read_session, monkeypatch
+) -> None:
+    """GET /posts -> $[0].id into postId -> GET /posts/101.
+
+    The response deliberately does not contain a postId field; only the source
+    path and the target variable name connect the two concepts.
+    """
+    client = _install_client(monkeypatch)
+
+    plan = copy.deepcopy(_plan_payload())
+    steps = plan["scenarios"][0]["steps"]
+    steps[0]["path"] = "/posts"
+    steps[1]["sourcePath"] = "$[0].id"
+    steps[1]["sourceStepId"] = READ_STEP
+    steps[1]["produces"] = "postId"
+    steps[2]["path"] = "/posts/{{postId}}"
+    steps[2]["method"] = "GET"
+    steps[2]["consumes"] = ["postId"]
+    plan["scenarios"][0]["assertions"][0]["expected"] = "200"
+
+    run_id = await _create_run(fixtures, stack, monkeypatch, plan=plan)
+
+    scenario = (await _scenario_rows(read_session, run_id))[0]
+    by_key = {step.step_key: step for step in await _step_rows(read_session, scenario.id)}
+    extract = by_key[EXTRACT_STEP]
+    assert extract.source_path == "$[0].id"
+    assert extract.source_step_key == READ_STEP
+
+    stored_extract = (
+        await read_session.execute(
+            select(_TestStep)
+            .join(_TestScenario, _TestScenario.id == _TestStep.scenario_id)
+            .where(
+                _TestScenario.scenario_key == SCENARIO_KEY,
+                _TestStep.step_key == EXTRACT_STEP,
+            )
+        )
+    ).scalar_one()
+    assert stored_extract.config == {
+        "sourcePath": "$[0].id",
+        "sourceStepId": READ_STEP,
+    }
+
+    project_public_id = await _project_public_id(fixtures, stack["project"])
+    plans = await agent_service.list_plans(read_session, project_id=project_public_id)
+    read_back = next(
+        step
+        for plan in plans
+        for scenario in plan.scenarios
+        for step in scenario.steps
+        if step.id == EXTRACT_STEP
+    )
+    assert read_back.source_path == "$[0].id"
+    assert read_back.source_step_id == READ_STEP
+
+    await run_executor.execute_run(run_id)
+
+    sent = list(client.sent)
+    assert [request.url.path for request in sent] == ["/posts", "/posts/101"]
+
+    run = (
+        await read_session.execute(select(_TestRun).where(_TestRun.id == run_id))
+    ).scalar_one()
+    assert run.status == "passed"

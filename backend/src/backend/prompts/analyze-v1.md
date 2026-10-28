@@ -58,8 +58,11 @@ One JSON object matching the schema you were given. It has six sections:
   specification facts, unchanged**: same `id`, `method`, `path`,
   `resourceId`, `summary`, `requiresAuth`, `pathParams`,
   `requiredBodyProps`, `constrainedBodyProps`, `responseStatuses`,
-  `responseProps`. Do not invent an endpoint, do not drop one, do not rename
-  one. The parser already did this part; your job is not to redo it.
+  `responseProps`, `responsePaths`. Do not invent an endpoint, do not drop one,
+  do not rename one. The parser already did this part; your job is not to redo it.
+  `responsePaths` is the structured source-path view: `$.id` for an object body,
+  `$[0].id` for the first item of a list body, and dotted paths for nested
+  objects.
 * `resources` — the groups those endpoints belong to. Also copied unchanged.
 * `authentication` — the scheme the API declares, where a credential comes
   from, and which response field carries it. Copied unchanged.

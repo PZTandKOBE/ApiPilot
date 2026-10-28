@@ -1048,6 +1048,8 @@ async def _plan_response(
                 method=_config_value(row["config"], "method"),
                 path=_config_value(row["config"], "path"),
                 produces=row["produces"],
+                source_path=_config_value(row["config"], "sourcePath"),
+                source_step_id=_config_value(row["config"], "sourceStepId"),
                 consumes=list(row["consumes"] or []),
                 # The request body the plan stored.  Read from the same config
                 # blob as method and path, and read as the raw JSON value: the
@@ -1234,6 +1236,7 @@ def _understanding_response(
                 constrained_body_props=list(endpoint.constrained_body_props),
                 response_statuses=list(endpoint.response_statuses),
                 response_props=list(endpoint.response_props),
+                response_paths=list(endpoint.response_paths),
             )
             for endpoint in understanding.endpoints
         ],

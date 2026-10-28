@@ -639,6 +639,14 @@ def _config_target(step: PlanStep) -> dict[str, Any]:
     would be a key that looks like data and reads like absence, and the column's
     own default is already the empty object.
     """
+    if step.kind == "extract":
+        extract_config: dict[str, Any] = {}
+        if step.source_path:
+            extract_config["sourcePath"] = step.source_path
+        if step.source_step_id:
+            extract_config["sourceStepId"] = step.source_step_id
+        return extract_config
+
     if step.kind != "request":
         return {}
 
@@ -979,6 +987,8 @@ async def _insert_run_tree(
                 description=step.description.model_dump(),
                 step_type=step.kind,
                 endpoint_id=None,
+                source_path=step.source_path,
+                source_step_key=step.source_step_id,
                 # Snapshots, copied rather than joined: editing a step in the
                 # plan must not rewrite what an earlier run reported.
                 method=method,
