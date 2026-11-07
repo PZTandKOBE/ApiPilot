@@ -295,11 +295,21 @@ class AgentAuthenticationResponse(Schema):
 
 
 class AgentDependencyResponse(Schema):
-    id: str
+    id: str = Field(
+        description=(
+            "dep_<fromEndpointId>__<toEndpointId>__<binding>, where binding is "
+            "the variable name carried across the edge."
+        )
+    )
     from_endpoint_id: str
     to_endpoint_id: str
     kind: str
-    binding: str
+    binding: str = Field(
+        description=(
+            "The variable name carried across the edge (for example 'postId'). "
+            "Never a JSONPath or a 'source -> variable' expression."
+        )
+    )
     rationale: LocalizedText
 
 

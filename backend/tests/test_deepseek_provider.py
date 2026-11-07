@@ -29,6 +29,15 @@ from typing import Any, Mapping, Sequence
 import httpx
 import pytest
 
+from backend.schemas.agent import (
+    AgentAuthenticationResponse,
+    AgentDependencyResponse,
+    AgentEndpointResponse,
+    AgentEvidenceResponse,
+    AgentFindingResponse,
+    AgentResourceResponse,
+    AgentUnderstandingResponse,
+)
 from backend.services import agent_analyzer, agent_plan
 from backend.services.agent_plan import PlanPipelineError
 from backend.services.llm import (
@@ -452,3 +461,103 @@ async def test_live_plan_is_valid_and_never_approved() -> None:
     # anything downstream is allowed to see it.
     issues = agent_analyzer.plan_design_issues(outcome.design, parsed)
     assert issues == [], f"the completed plan failed its own validator: {issues}"
+
+
+def _understanding_answer(parsed, *, binding: str, dependency_suffix: str | None = None):
+    """A complete understanding answer with one dependency, for contract checks."""
+    endpoints = [
+        AgentEndpointResponse(
+            id=fact.id,
+            method=fact.method,
+            path=fact.path,
+            resource_id=fact.resource_id,
+            summary=fact.summary,
+            requires_auth=fact.requires_auth,
+            security_declared=fact.security_declared,
+            security_schemes=list(fact.security_schemes),
+            security_optional=fact.security_optional,
+            path_params=list(fact.path_params),
+            required_body_props=list(fact.required_body_props),
+            constrained_body_props=list(fact.constrained_body_props),
+            response_statuses=list(fact.response_statuses),
+            response_props=list(fact.response_props),
+            response_paths=list(fact.response_paths),
+        )
+        for fact in parsed.endpoints
+    ]
+    resources = [
+        AgentResourceResponse(
+            id=fact.id, name=fact.name, endpoint_ids=list(fact.endpoint_ids)
+        )
+        for fact in parsed.resources
+    ]
+    authentication = AgentAuthenticationResponse(
+        scheme=parsed.authentication.scheme,
+        scheme_name=parsed.authentication.scheme_name,
+        header_name=parsed.authentication.header_name,
+        token_source_endpoint_id=parsed.authentication.token_source_endpoint_id,
+        token_field=parsed.authentication.token_field,
+        protected_endpoint_count=parsed.authentication.protected_endpoint_count,
+    )
+    from_id = parsed.endpoints[0].id
+    to_id = parsed.endpoints[1].id
+    suffix = dependency_suffix if dependency_suffix is not None else binding
+    dependency = AgentDependencyResponse(
+        id=f"dep_{from_id}__{to_id}__{suffix}",
+        from_endpoint_id=from_id,
+        to_endpoint_id=to_id,
+        kind="reference",
+        binding=binding,
+        rationale={"text": "carry the created id"},
+    )
+    finding = AgentFindingResponse(
+        id="finding_1",
+        action={"text": "inspect"},
+        decision_summary={"text": "one edge"},
+        result="succeeded",
+        evidence=[{"label": {"text": "edges"}, "value": "1"}],
+        at="2026-11-07T00:00:00Z",
+    )
+    return AgentUnderstandingResponse(
+        spec_id=parsed.spec.id,
+        endpoints=endpoints,
+        resources=resources,
+        authentication=authentication,
+        dependencies=[dependency],
+        risks=[],
+        findings=[finding],
+        analyzed_at="2026-11-07T00:00:00Z",
+    )
+
+
+def test_a_dependency_id_with_a_variable_binding_is_accepted() -> None:
+    parsed = _parsed_spec()
+    answer = _understanding_answer(parsed, binding="postId")
+
+    assert agent_analyzer.domain_issues(answer, parsed) == []
+
+
+def test_the_arrow_binding_shape_that_failed_production_is_refused() -> None:
+    parsed = _parsed_spec()
+    answer = _understanding_answer(
+        parsed,
+        binding="$[0].id -> postId",
+        dependency_suffix="postId",
+    )
+
+    issues = agent_analyzer.domain_issues(answer, parsed)
+    assert any("dependency id" in issue for issue in issues), issues
+
+
+def test_dependency_binding_contract_is_documented_for_the_model() -> None:
+    prompt = agent_analyzer.load_prompt()
+    assert "variable name" in prompt.text
+    assert "postId" in prompt.text
+    assert "$[0].id -> postId" in prompt.text
+
+    fields = AgentDependencyResponse.model_fields
+    id_description = (fields["id"].description or "").lower()
+    binding_description = (fields["binding"].description or "").lower()
+    assert "dep_<fromendpointid>" in id_description
+    assert "variable name" in binding_description
+    assert "jsonpath" in binding_description

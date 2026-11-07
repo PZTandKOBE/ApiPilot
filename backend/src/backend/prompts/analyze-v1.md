@@ -76,6 +76,11 @@ One JSON object matching the schema you were given. It has six sections:
   Give each edge an `id` of the form
   `dep_<fromEndpointId>__<toEndpointId>__<binding>`, the two endpoint ids it
   connects, and a `rationale` that states the rule in one sentence.
+  `binding` is the **variable name** carried across the edge (for example
+  `postId`), never a JSONPath, a source path, or a "source -> variable"
+  expression.  The id uses that same exact name with no extra text:
+  `binding: "postId"`, `id: "dep_ep_get_posts__ep_get_posts_postid__postId"`.
+  Do not write `"$[0].id -> postId"` into either field.
 * `risks` — what makes this API hard to test, each with a `category` from
   `authentication`, `dependency`, `validation`, `negative-coverage`,
   `idempotency`, `authorization`; a `level` of `low`, `medium` or
