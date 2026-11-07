@@ -219,7 +219,13 @@ class PlanPayload(Schema):
     name: LocalizedText
     goal: LocalizedText
     risk_level: RiskLevel
-    status: ApprovalStatus
+    status: ApprovalStatus = Field(
+        description=(
+            "The client's own view of the review state. Accepted for wire "
+            "compatibility and ignored by run creation: the server reads "
+            "test_plans.status and the approval receipt instead."
+        )
+    )
     scenarios: list[PlanScenario] = Field(default_factory=list)
     source: PlanSource
     generated_at: datetime

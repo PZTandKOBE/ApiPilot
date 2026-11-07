@@ -111,7 +111,7 @@ const withFinishedRun = async (): Promise<void> => {
   await agent.loadDemoSpec()
   await agent.analyzeSpec()
   await agent.generatePlan()
-  agent.approvePlan(agent.activePlan?.id ?? '')
+  await agent.approvePlan(agent.activePlan?.id ?? '')
 
   await useRunsStore().createRun({ immediate: true })
   await agent.loadTasks()

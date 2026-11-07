@@ -346,8 +346,9 @@ export type PlanSource = (typeof PLAN_SOURCES)[number]
 /**
  * The approval boundary.
  *
- * `approved` is the only status that permits execution, and only
- * `approvePlan()` can produce it — the agent generates `draft` and stops.
+ * `approved` is the only status that permits execution, and only the server's
+ * approve endpoint can produce it — the agent generates `draft` and stops, and
+ * the frontend never authorises a plan by editing local state.
  */
 export interface TestPlan {
   readonly id: string
@@ -364,6 +365,15 @@ export interface TestPlan {
   readonly rejectedAt: string | null
   /** Free text typed by the reviewer; never generated. */
   readonly rejectionReason: string | null
+  /**
+   * Who approved this plan on the server, if anyone.
+   *
+   * The server records the reviewer's identity alongside the approval moment
+   * and the content fingerprint; it is *the* answer to "was this approved?",
+   * and the local copy is only a cache of it.  Absent on plans persisted before
+   * server-side approval existed.
+   */
+  readonly approvedBy?: 'account' | 'guest' | null
   /**
    * The plan's version within its project/document series. The first plan is 1;
    * a regeneration creates the next version under a new id. Absent on plans

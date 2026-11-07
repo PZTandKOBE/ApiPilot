@@ -42,10 +42,13 @@ export { RunServiceError, isRunServiceError } from './runError'
  * The values are what makes a run reproducible; the id is what makes it
  * *explainable* afterwards, when the environment they came from has moved on.
  *
- * **The backend must re-check `plan.status === 'approved'`.** Approval is
- * written to `localStorage` by the browser and is editable there. The approval
- * dialog is a UI boundary, not a security one, and "the client said it was
- * approved" is not a fact a server can act on.
+ * **The plan travels for compatibility, but it does not authorise the run.**
+ * The plan is still sent whole because request synthesis needs the tree the
+ * reviewer saw.  Its `status` has no authority: the server looks the plan up
+ * by `planId`, requires the approval receipt it wrote itself, and compares the
+ * stored content fingerprint with the approved one.  The client's approval
+ * dialog is a UI boundary; editing local state (or `localStorage`) cannot make
+ * a plan runnable.
  */
 export interface CreateRunInput {
   readonly projectId: string

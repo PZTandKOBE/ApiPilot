@@ -315,34 +315,9 @@ def _plan_payload(status: str, *, plan_id: str = "plan_c16_gate") -> dict[str, A
 # NaN #
 
 
-@pytest.mark.parametrize("status", ["draft", "rejected", "in_review"])
-def test_unapproved_statuses_are_refused_by_the_gate(status: str) -> None:
-    """The gate is a whitelist: only `approved` passes it."""
-    plan = PlanPayload.model_validate(_plan_payload(status))
-
-    with pytest.raises(AppError) as caught:
-        runs._check_approval(plan)
-
-    assert caught.value.status_code == 409
-    assert caught.value.code == "not-approved"
-    assert caught.value.details["status"] == status
-
-
-def test_approved_status_passes_the_gate() -> None:
-    """The other half of the rule: the check is not a blanket refusal."""
-    runs._check_approval(PlanPayload.model_validate(_plan_payload("approved")))
-
-
-def test_the_gate_takes_no_session() -> None:
-    """The refusal happens on the payload, before the session is used.
-
-    `_check_approval` has no session parameter, so it cannot write.  This is a
-    structural fact about the gate rather than a promise about its behaviour.
-    """
-    assert list(inspect.signature(runs._check_approval).parameters) == ["plan"], (
-        "the gate grew a dependency; if it now needs a session, re-check that it "
-        "still refuses before writing anything"
-    )
+# The former payload-only gate tests lived here; the gate now reads the stored
+# plan under a row lock, so its behaviour is covered end to end in
+# tests/test_run_requires_approval.py (status, fingerprint, ownership, writes).
 
 
 # NaN #
@@ -608,9 +583,14 @@ async def test_live_agent_task_persists_a_draft_then_the_gate_refuses_it(
     assert stored.status == "draft"
     assert stored.approved_at is None
 
-    # And the gate still refuses it, because approval was never granted.
+    # And the gate still refuses it, because approval was never granted.  The
+    # gate reads the stored row, so the fixture's draft status is what decides.
+    project_row = await fixtures.session.get(Project, stack["project"])
+    assert project_row is not None
     with pytest.raises(AppError) as caught:
-        runs._check_approval(PlanPayload.model_validate(_plan_payload("draft", plan_id=plan.id)))
+        await runs._require_approved_plan(
+            fixtures.session, project=project_row, plan_id=plan.id
+        )
     assert caught.value.code == "not-approved"
 
     runs_left = list(

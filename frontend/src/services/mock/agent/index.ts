@@ -114,6 +114,38 @@ export const createMockAgentService = (): MockAgentService => {
   const seriesKey = (projectId: string, specId: string): string =>
     projectId + ':' + specId
 
+  /**
+   * One live plan by its project-scoped public id.
+   *
+   * The review endpoints are addressed by that pair, and a plan that does not
+   * exist is a 404 in both worlds.  Returned with its series so the caller can
+   * write the transition back into the same registry listPlans reads.
+   */
+  const locatePlan = (
+    projectId: string,
+    planId: string,
+  ): { readonly key: string; readonly index: number; readonly plan: TestPlan } | null => {
+    for (const [key, versions] of series) {
+      const index = versions.findIndex(
+        (item) => item.projectId === projectId && item.id === planId,
+      )
+
+      if (index !== -1) {
+        const found = versions[index]
+        if (found !== undefined) return { key, index, plan: found }
+      }
+    }
+
+    return null
+  }
+
+  const planNotFound = (planId: string): AgentServiceError =>
+    new AgentServiceError({
+      code: 'plan-not-found',
+      messageKey: 'console.plans.notFound',
+      params: { planId },
+    })
+
   const analyze = async (
     parsed: ParsedSpec,
     options: AnalyzeOptions = {},
@@ -296,6 +328,72 @@ export const createMockAgentService = (): MockAgentService => {
         .map((item) => ({ ...item }))
     },
 
+    async approvePlan(projectId: string, planId: string) {
+      const found = locatePlan(projectId, planId)
+
+      if (found === null) throw planNotFound(planId)
+
+      // Approving an already-approved, unchanged plan is idempotent: the
+      // receipt is not rewritten, so a retried request does not move the
+      // moment a human actually reviewed.  The content cannot change from
+      // this side (the plan is immutable here), so a changed fingerprint would
+      // be a different plan id.
+      const alreadyApproved =
+        found.plan.status === 'approved' &&
+        found.plan.approvedBy !== null &&
+        found.plan.approvedBy !== undefined
+
+      if (alreadyApproved) return { ...found.plan }
+
+      const approved: TestPlan = {
+        ...found.plan,
+        status: 'approved',
+        approvedAt: new Date().toISOString(),
+        rejectedAt: null,
+        rejectionReason: null,
+        approvedBy: 'guest',
+      }
+
+      const versions = series.get(found.key)
+      if (versions !== undefined) versions[found.index] = approved
+
+      return { ...approved }
+    },
+
+    async rejectPlan(projectId: string, planId: string, reason: string) {
+      const trimmed = reason.trim()
+
+      if (trimmed === '') {
+        // The endpoint refuses a blank reason before it looks the plan up; the
+        // mock refuses it with the sentence the console already defines.
+        throw new AgentServiceError({
+          code: 'plan-invalid',
+          messageKey: 'console.aiTest.approval.reasonRequired',
+        })
+      }
+
+      const found = locatePlan(projectId, planId)
+
+      if (found === null) throw planNotFound(planId)
+
+      // Rejecting an already-rejected plan keeps the first reviewer's sentence.
+      if (found.plan.status === 'rejected') return { ...found.plan }
+
+      const rejected: TestPlan = {
+        ...found.plan,
+        status: 'rejected',
+        rejectedAt: new Date().toISOString(),
+        rejectionReason: trimmed,
+        approvedAt: null,
+        approvedBy: null,
+      }
+
+      const versions = series.get(found.key)
+      if (versions !== undefined) versions[found.index] = rejected
+
+      return { ...rejected }
+    },
+
     async deletePlan(projectId: string, planId: string) {
       const key = [...series.keys()].find((candidate) =>
         (series.get(candidate) ?? []).some(
@@ -305,7 +403,7 @@ export const createMockAgentService = (): MockAgentService => {
 
       if (key === undefined) {
         throw new AgentServiceError({
-          code: 'generate-failed',
+          code: 'plan-not-found',
           messageKey: 'console.plans.notFound',
         })
       }

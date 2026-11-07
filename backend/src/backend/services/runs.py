@@ -20,31 +20,29 @@ equality with no positional fallback *and* has no insert path, so a run whose
 tree is half-written renders as a shell whose rows never update and never
 raises.
 
-**2. The approval gate is a mirror, not an authority.**  ``plan.status``
-arrives in the request body, so checking it here enforces the *same rule the
-client already enforces* (``frontend/src/stores/runs.ts`` refuses to send a
-non-approved plan) and stops a caller from bypassing the browser.  It is **not**
-database-backed approval authority, because the plan row this service writes is
-itself built from the same untrusted payload.  There is no Plan Approval API
-yet; when there is one, this check should read the stored ``status`` instead.
-Nothing in this module may describe the current check as verification.
+**2. The approval gate is database-backed.**  ``plan.status`` in the request
+body is accepted for wire compatibility and **ignored**.  The gate looks the plan
+up inside this project under a row lock, requires ``test_plans.status =
+'approved'``, and recomputes the content fingerprint (``services/plan_hash.py``)
+against the receipt written by ``services/agent.approve_plan``.  The run
+snapshot is built from the stored tree, so a client cannot substitute content
+between review and execution.
 
 **3. Variable names are persisted; values are not.**  ``test_runs.variable_keys``
 is a sorted list of names.  The values in ``RunCreateRequest.variables`` are
 secrets in flight, are used by nothing here, and must never be written to a
 column, an error body or a log line.
 
-**4. Plan rows are reused, not rewritten.**  ``UNIQUE(project_id, public_id)``
-with get-or-create means the second run of a plan attaches to the same
-``test_plans`` row.  The plan tree is *not* re-materialised on the reuse path,
-so a reused ``test_plans`` row may no longer match the payload an earlier run
-was created from.  That is deliberate, and it is the reason
-``test_runs.plan_name`` is a frozen copy rather than a join.
+**4. Plan rows are referenced, never written here.**  A run create no longer
+materialises a plan from the request body; it attaches to the row the agent
+pipeline wrote and the reviewer approved.  ``test_runs.plan_name`` remains a
+frozen copy rather than a join, so a later rename cannot rewrite history.
 
-The reuse path is also the only path that reads a step's request target out of
-the stored plan: a create that states no method or path for a ``request`` step
-gets them from ``test_steps.config``, so a plan the server already holds stays
-executable on its own.  See ``_config_target`` / ``_request_target``.
+The stored plan is the source of the whole executable content: method, path,
+body/body_present, the Extract source fields and the produced variable are
+snapshotted into ``run_*`` rows (``produces`` / ``body`` / ``body_present`` /
+``source_*``), so the executor never reads a plan table.  See
+``_config_target`` / ``_request_target``.
 
 **5. Reads are a constant number of queries, whatever the page size.**  A run
 list needs four things per row that ``test_runs`` does not store: the plan's
@@ -158,7 +156,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -166,6 +164,7 @@ from typing import Any
 from pydantic import TypeAdapter, ValidationError
 from sqlalchemy import Row, Select, func, insert, select, update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import lazyload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.errors import SQLSTATE_UNIQUE_VIOLATION, AppError, constraint_of
@@ -197,6 +196,7 @@ from backend.schemas.run import (
     RunStepResponse,
     RunSummaryResponse,
 )
+from backend.services import plan_hash, plan_structure
 from backend.services.spec_identity import (
     DocumentFacts,
     SpecIdentity,
@@ -256,6 +256,9 @@ expensive mistake, and waiting one more interval costs a read.
 
 _CREATE_FAILED = "console.runs.errors.createFailed"
 _NOT_APPROVED = "console.runs.errors.notApproved"
+_PLAN_CHANGED = "console.runs.errors.planChanged"
+_PLAN_INVALID_CONTENT = "console.plans.errors.invalidContent"
+_PLAN_NOT_FOUND = "console.plans.notFound"
 _LIST_FAILED = "console.runs.errors.loadFailed"
 _NOT_FOUND = "console.runs.errors.notFound"
 _CANCEL_FAILED = "console.runs.errors.cancelFailed"
@@ -377,18 +380,269 @@ def _display_name(name: LocalizedText) -> str:
     return name.text
 
 
-def _check_approval(plan: PlanPayload) -> None:
-    """Refuse anything that is not approved, before touching the database."""
-    if plan.status == "approved":
-        return
+def _row_display_name(name: object) -> str:
+    """The plan name a refusal interpolates, read from the stored JSONB value.
 
-    raise AppError(
+    The client's own copy is no longer consulted: the sentence names the plan
+    the server looked up, so a tampered body cannot put its words in an error.
+    """
+    if not isinstance(name, Mapping):
+        return ""
+
+    key = name.get("key")
+    if isinstance(key, str) and key != "":
+        return key
+
+    text = name.get("text")
+    return text if isinstance(text, str) else ""
+
+
+def _materialization_issues(
+    plan: PlanPayload, materialization: "_PlanMaterialization"
+) -> list[dict[str, str]]:
+    """Every payload row that did not materialise, plus its extract source.
+
+    The source relations are copied onto run rows as key strings.  A missing
+    mapping would currently become NULL and only surface as a failed extract at
+    execution time, so it is refused before the run row is written.
+    """
+    issues: list[dict[str, str]] = []
+
+    for scenario in plan.scenarios:
+        if materialization.scenario_ids.get(scenario.id) is None:
+            issues.append(
+                {
+                    "rule": "scenario-materialization",
+                    "detail": "scenario " + repr(scenario.id)
+                    + " has no stored row in this plan",
+                    "scenarioId": scenario.id,
+                }
+            )
+
+        for step in scenario.steps:
+            if materialization.step_ids.get((scenario.id, step.id)) is None:
+                issues.append(
+                    {
+                        "rule": "step-materialization",
+                        "detail": "step " + repr(step.id)
+                        + " has no stored row in this plan",
+                        "scenarioId": scenario.id,
+                        "stepId": step.id,
+                    }
+                )
+
+            source_step_id = (step.source_step_id or "").strip()
+            if step.kind == "extract" and source_step_id:
+                if materialization.step_ids.get((scenario.id, source_step_id)) is None:
+                    issues.append(
+                        {
+                            "rule": "source-materialization",
+                            "detail": "extract source " + repr(source_step_id)
+                            + " has no stored row in this scenario",
+                            "scenarioId": scenario.id,
+                            "stepId": step.id,
+                        }
+                    )
+
+        for assertion in scenario.assertions:
+            if (
+                materialization.assertion_ids.get((scenario.id, assertion.id))
+                is None
+            ):
+                issues.append(
+                    {
+                        "rule": "assertion-materialization",
+                        "detail": "assertion " + repr(assertion.id)
+                        + " has no stored row in this plan",
+                        "scenarioId": scenario.id,
+                    }
+                )
+
+    return issues
+
+
+async def _require_approved_plan(
+    session: AsyncSession, *, project: Project, plan_id: str
+) -> plan_hash.StoredPlan:
+    """The stored, approved, unchanged plan, or the refusal that ends the create.
+
+    Three checks, in this order, under a shared row lock:
+    1. the plan exists in this project and is not retired (404 otherwise);
+    2. its stored status is approved (409 not-approved otherwise);
+    3. the fingerprint of its rows still matches the receipt (409 plan-changed
+       otherwise).
+
+    FOR SHARE holds the row for the rest of the create transaction, so a
+    concurrent approve/reject/soft-delete waits until the run that read it has
+    committed.  Together with the fingerprint, this is what makes "the run
+    executes exactly the approved content" a property rather than a hope.
+    """
+    row = (
+        await session.execute(
+            select(TestPlan)
+            # TestPlan.agent_task is lazy="joined"; a FOR SHARE clause is not
+            # allowed on the nullable side of that outer join.  The gate only
+            # needs the plan row itself, so the join is switched off here.
+            .options(lazyload(TestPlan.agent_task))
+            .where(
+                TestPlan.project_id == project.id,
+                TestPlan.public_id == plan_id,
+                TestPlan.deleted_at.is_(None),
+            )
+            .with_for_update(read=True)
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        raise AppError(
+            404,
+            code="plan-not-found",
+            message_key=_PLAN_NOT_FOUND,
+            params={"planId": plan_id},
+        )
+
+    if row.status != "approved":
+        raise AppError(
+            409,
+            code="not-approved",
+            message_key=_NOT_APPROVED,
+            params={"plan": _row_display_name(row.name)},
+            details={"status": row.status},
+        )
+
+    try:
+        stored = await plan_hash.load_stored_plan(
+            session, plan=row, project_public_id=project.public_id
+        )
+    except plan_hash.PlanContentError as exc:
+        raise AppError(
+            409,
+            code="plan-changed",
+            message_key=_PLAN_CHANGED,
+            params={"plan": _row_display_name(row.name)},
+            details={"planId": plan_id, "reason": str(exc)},
+        ) from exc
+
+    if row.content_hash is None or row.content_hash != stored.content_hash:
+        raise AppError(
+            409,
+            code="plan-changed",
+            message_key=_PLAN_CHANGED,
+            params={"plan": _row_display_name(row.name)},
+            details={"planId": plan_id},
+        )
+
+    # A receipt only proves the bytes did not change; it does not prove the tree
+    # can execute.  Re-check the same structure approval checks, because a row
+    # may have been approved before this rule existed (or by a bypassing writer).
+    try:
+        plan_structure.validate_executable_plan(stored.payload)
+    except plan_structure.PlanStructureError as exc:
+        raise AppError(
+            409,
+            code="plan-invalid",
+            message_key=_PLAN_INVALID_CONTENT,
+            params={"plan": _row_display_name(row.name)},
+            details={
+                "planId": plan_id,
+                "reason": str(exc),
+                "issues": exc.as_dicts(),
+            },
+        ) from exc
+
+    return stored
+
+
+def _plan_changed(plan_id: str, display_name: str) -> AppError:
+    return AppError(
         409,
-        code="not-approved",
-        message_key=_NOT_APPROVED,
-        params={"plan": _display_name(plan.name)},
-        details={"status": plan.status},
+        code="plan-changed",
+        message_key=_PLAN_CHANGED,
+        params={"plan": display_name},
+        details={"planId": plan_id},
     )
+
+
+async def _verify_snapshot_matches_approval(
+    session: AsyncSession,
+    *,
+    stored: plan_hash.StoredPlan,
+    project_public_id: str,
+) -> None:
+    """Re-read the plan after the snapshot was built and fail if it moved.
+
+    The gate's fingerprint and the run tree are written in the same
+    transaction, under FOR SHARE on the plan row.  This second read closes the
+    READ COMMITTED window between the gate and the copy for any writer that
+    committed in between: if the fingerprint differs now, the transaction is
+    rolled back rather than committing a run that executes content nobody
+    approved.  Writers of plan content must take the same plan-row lock; this
+    application has no such writer, and the invariant is recorded in
+    services/plan_hash.py.
+    """
+    row = await session.get(TestPlan, stored.plan_row_id)
+    if row is None:  # pragma: no cover - the plan row was locked a moment ago
+        raise _plan_changed(stored.public_id, stored.public_id)
+
+    try:
+        current = await plan_hash.load_stored_plan(
+            session, plan=row, project_public_id=project_public_id
+        )
+    except plan_hash.PlanContentError as exc:
+        raise AppError(
+            409,
+            code="plan-changed",
+            message_key=_PLAN_CHANGED,
+            params={"plan": _row_display_name(row.name)},
+            details={"planId": stored.public_id, "reason": str(exc)},
+        ) from exc
+
+    if current.content_hash != stored.content_hash:
+        raise _plan_changed(stored.public_id, _row_display_name(row.name))
+
+
+def _consumes_by_step(plan: PlanPayload) -> dict[tuple[str, str], tuple[str, ...]]:
+    """The non-execution plan metadata a run row does not carry.
+
+    consumes is used only by plan validation; the executor never reads it and
+    the run snapshot has no column for it.  The approved payload is the
+    authority for it, and the run-side canonical content needs the same value
+    to reproduce the approved digest exactly.
+    """
+    return {
+        (scenario.id, step.id): tuple(step.consumes)
+        for scenario in plan.scenarios
+        for step in scenario.steps
+    }
+
+
+async def _verify_run_snapshot(
+    session: AsyncSession, *, run_id: uuid.UUID, stored: plan_hash.StoredPlan
+) -> None:
+    """Rebuild the digest from the Run rows and compare it to the approval.
+
+    This is not a second read of the plan: it reads the run tree that was just
+    written (run_scenarios / run_steps / run_assertions), applies the same
+    canonical builders plan_hash uses at approval time, and hashes the result.
+    A missing, mis-mapped, reordered or altered execution field therefore fails
+    the create and rolls the whole transaction back.
+    """
+    content = await plan_hash.load_run_content(
+        session,
+        run_id=run_id,
+        consumes_by_step=_consumes_by_step(stored.payload),
+    )
+    if plan_hash.hash_content(content) != stored.content_hash:
+        raise AppError(
+            409,
+            code="run-snapshot-mismatch",
+            message_key=_CREATE_FAILED,
+            details={
+                "runId": str(run_id),
+                "planId": stored.public_id,
+                "reason": "the run snapshot does not match the approved plan content",
+            },
+        )
 
 
 def _mismatch(field: str, expected: str, received: str) -> AppError:
@@ -712,49 +966,6 @@ def _request_target(
     return method, path
 
 
-async def _get_or_create_plan(
-    session: AsyncSession,
-    *,
-    project_id: uuid.UUID,
-    spec_id: uuid.UUID,
-    plan: PlanPayload,
-) -> _PlanMaterialization:
-    """Reuse the stored plan for ``(project_id, public_id)``, or write the tree.
-
-    ``public_id`` is the *whole* ``planId`` string -- ``plan_orders_api_1a2b``
-    -- not the slug with the prefix stripped.  The plan id is derived from the
-    spec's slug, but it is stored as its own value and stripped only in the
-    spec direction, where there is no column to strip it for.
-
-    **Reuse does not rewrite.**  A second run of the same plan attaches to the
-    existing row and the existing tree, and the ids it resolves are looked up
-    by stable key.  A payload scenario the stored plan has never seen gets no
-    ``source_scenario_id`` rather than a fabricated one.
-
-    Writing is delegated to ``_create_plan_tree``, which the agent pipeline also
-    calls: one writer for the four plan-side tables, two callers that differ only
-    in whether they set ``agent_task_id``.
-    """
-    existing = (
-        await session.execute(
-            select(TestPlan).where(
-                TestPlan.project_id == project_id, TestPlan.public_id == plan.id
-            )
-        )
-    ).scalar_one_or_none()
-
-    if existing is not None:
-        return await _load_plan_tree(session, existing.id)
-
-    return await _create_plan_tree(
-        session,
-        project_id=project_id,
-        spec_id=spec_id,
-        plan=plan,
-        agent_task_id=None,
-    )
-
-
 async def _create_plan_tree(
     session: AsyncSession,
     *,
@@ -766,11 +977,10 @@ async def _create_plan_tree(
 ) -> _PlanMaterialization:
     """Write the plan row and its tree: the only writer of these four tables.
 
-    Split out of the get-or-create wrapper because two callers write a plan for
-    different reasons.  A run create attaches to whatever is already stored; the
-    agent pipeline writes the plan it has just generated, together with the task
-    it came from.  `agent_task_id` is the only difference between them, and
-    `None` is what the run path has always written.
+    The agent pipeline is the writer: this row is the plan it has just generated,
+    together with the task it came from.  Run creation no longer calls this;
+    it attaches to the row that is already stored and approved.  `agent_task_id`
+    links the row back to the task that produced it.
     """
     stored = TestPlan(
         agent_task_id=agent_task_id,
@@ -782,12 +992,15 @@ async def _create_plan_tree(
         # on the table and the only place it can go.
         description=plan.goal.model_dump(),
         version=version,
-        status=plan.status,
+        # A generated plan is always a draft.  The approval receipt is written
+        # only by services.agent.approve_plan, so no payload field can hand the
+        # agent (or a run create) an approved status.
+        status="draft",
         risk_level=plan.risk_level,
         source=plan.source,
-        approved_at=plan.approved_at,
-        rejected_at=plan.rejected_at,
-        rejection_reason=plan.rejection_reason,
+        approved_at=None,
+        rejected_at=None,
+        rejection_reason=None,
     )
     session.add(stored)
     await session.flush()
@@ -989,13 +1202,23 @@ async def _insert_run_tree(
                 endpoint_id=None,
                 source_path=step.source_path,
                 source_step_key=step.source_step_id,
-                # Snapshots, copied rather than joined: editing a step in the
-                # plan must not rewrite what an earlier run reported.
+                # Snapshots, copied rather than joined: editing or deleting a
+                # step in the plan must not rewrite what this run executes or
+                # what an earlier run reported.  These three fields used to be
+                # re-read from test_steps by the executor.
+                produces=step.produces,
+                body_present=step.body_present,
                 method=method,
                 path=path,
                 sort_order=step.index,
                 status="pending",
             )
+            if step.body_present:
+                # Explicit None here means the JSON literal null (SQLAlchemy's
+                # JSONB stores None as JSON null by default).  A step with no
+                # body leaves the attribute unset, so the column is SQL NULL --
+                # which is why body_present exists as the authoritative flag.
+                run_step.body = step.body
             session.add(run_step)
             steps_by_key[step.id] = run_step
 
@@ -1044,10 +1267,10 @@ async def create_run(
 ) -> RunResponse:
     """Materialise everything ``test_runs`` needs, then write the run.
 
-    Ordered so that every check that can fail happens before the first
-    statement: the approval gate, the identity agreements and the column
-    lengths are all decided from the payload alone.  A request that is going to
-    be refused should not have written a spec row first.
+    The identity agreements and the column lengths are decided from the payload
+    before any statement; the approval gate is the first database read and it
+    takes a shared lock on the plan row.  No write precedes it, so a request
+    that is going to be refused leaves no spec, plan or run row behind.
 
     ``summary`` is computed from the rows just written rather than stored --
     there is no summary column -- and the frontend's ``summariseScenarios``
@@ -1055,9 +1278,8 @@ async def create_run(
     run reports its full materialised shape with the passed/failed counts at
     zero.
     """
-    plan = payload.plan
+    payload_plan = payload.plan
 
-    _check_approval(plan)
     _check_identity(project_id=project_id, payload=payload)
 
     facts = probe_document(payload.spec_document)
@@ -1067,30 +1289,54 @@ async def create_run(
     _check_spec_identity(payload=payload, identity=identity)
     _check_lengths(payload=payload, facts=facts, identity=identity)
 
+    # No row is written before the plan has been looked up in this project:
+    # a create that names a plan the server never stored, or one that is no
+    # longer approved, must not leave a spec, a plan or a run behind.
     try:
         project = await _lookup_project(session, project_id)
-        environment = await _lookup_environment(session, project.id, payload.environment_id)
-        spec = await _get_or_create_spec(
-            session,
-            project_id=project.id,
-            spec_document=payload.spec_document,
-            facts=facts,
-            identity=identity,
+        stored = await _require_approved_plan(
+            session, project=project, plan_id=payload.plan_id
         )
-        materialization = await _get_or_create_plan(
-            session, project_id=project.id, spec_id=spec.id, plan=plan
+
+        # The document the client sent must describe the same spec the stored
+        # plan was generated from.  The stored row is the authority for both the
+        # spec identity and the content, so a body that names something else is
+        # refused instead of being materialised.
+        if stored.spec_id != payload.spec_id:
+            raise _mismatch("specId", stored.spec_id, payload.spec_id)
+
+        environment = await _lookup_environment(
+            session, project.id, payload.environment_id
         )
+        materialization = await _load_plan_tree(session, stored.plan_row_id)
+        plan = stored.payload
+
+        materialization_issues = _materialization_issues(plan, materialization)
+        if materialization_issues:
+            raise AppError(
+                409,
+                code="plan-invalid",
+                message_key=_PLAN_INVALID_CONTENT,
+                params={"plan": _row_display_name(stored.payload.name)},
+                details={
+                    "planId": stored.public_id,
+                    "issues": materialization_issues,
+                },
+            )
 
         run = TestRun(
             project_id=project.id,
-            plan_id=materialization.plan_id,
-            spec_id=spec.id,
+            plan_id=stored.plan_row_id,
+            spec_id=stored.spec_row_id,
             environment_id=environment.id,
             # The frozen copy, not a join: a renamed plan must not rewrite the
             # name on runs that already happened.
             plan_name=plan.name.model_dump(),
             base_url=payload.base_url,
             status="queued",
+            # This create wrote every execution field onto the run tree; the
+            # executor therefore has no reason to read the plan.
+            snapshot_version=1,
             # Names only. There is no path from this module that writes a
             # variable's value to a column.
             variable_keys=sorted(payload.variables),
@@ -1102,6 +1348,16 @@ async def create_run(
             session, run=run, plan=plan, materialization=materialization
         )
 
+        # The approval check and the copy are one transaction; verify once more
+        # after the copy so a concurrent content change cannot slip between the
+        # two reads and be committed as a run.
+        await _verify_snapshot_matches_approval(
+            session, stored=stored, project_public_id=project.public_id
+        )
+
+        # Then verify the artifact that will execute: the Run rows themselves.
+        await _verify_run_snapshot(session, run_id=run.id, stored=stored)
+
         await session.commit()
     except IntegrityError as exc:
         # Rollback first, always: the failed statement left the transaction
@@ -1109,6 +1365,14 @@ async def create_run(
         # error response -- fails with 25P02 until the rollback lands.
         await session.rollback()
         raise _translate_integrity_error(exc) from exc
+    except AppError:
+        # The gate takes a row lock and later checks may still refuse (a spec
+        # identity mismatch, a missing environment).  Releasing the transaction
+        # here keeps a refusal from pinning the plan row until the caller's
+        # session happens to end -- which is also what makes the refusal leave
+        # no write behind when the caller is a test rather than a route.
+        await session.rollback()
+        raise
 
     if run.created_at is None:  # pragma: no cover - PostgreSQL returns it
         await session.refresh(run)
@@ -1122,19 +1386,23 @@ async def create_run(
 
     await schedule_run(run.id)
 
-    return _to_response(run=run, payload=payload)
+    return _to_response(run=run, plan=plan, payload=payload)
 
 
-def _to_response(*, run: TestRun, payload: RunCreateRequest) -> RunResponse:
+def _to_response(
+    *, run: TestRun, plan: PlanPayload, payload: RunCreateRequest
+) -> RunResponse:
     """Build the 201 body.
 
     The four public identifiers are echoed from the *request*, not read back
     from the run's foreign keys: they are the strings the client sent, and
     ``test_runs`` stores UUIDs.  ``id`` is the exception -- ``test_runs`` has no
     ``public_id``, so its row UUID is its external id.
-    """
-    plan = payload.plan
 
+    The counts and the name come from the *stored* plan, which is also what
+    ``_insert_run_tree`` snapshotted; the request body is echoed for identity
+    only and never executed.
+    """
     steps = sum(len(scenario.steps) for scenario in plan.scenarios)
     assertions = sum(len(scenario.assertions) for scenario in plan.scenarios)
 
@@ -1202,21 +1470,17 @@ class _RunCounts:
 
 _RUN_FAILURE_MESSAGES: dict[str, LocalizedMessage] = {
     "not-executable": LocalizedMessage(key="console.runs.failure.notExecutable"),
+    "empty-execution-tree": LocalizedMessage(
+        key="console.runs.failure.emptyExecutionTree"
+    ),
 }
 """The run-level ``error_code`` values that have a sentence in the dictionary.
 
-**Nothing writes ``test_runs.error_code`` yet** -- there is no executor, so every
-row this service can currently read has it NULL and the map is unreachable on
-live data.  It is here because the read path has to decide what an unknown code
-means *before* one exists, and because the alternative (a mapping added later,
-under a run that is already displaying a failure) is how a code ends up
-rendered raw.
-
-``console.runs.failure.notExecutable`` is the only ``failure`` key the frontend
-has (``frontend/src/locales/console/en-US.ts``), so it is the only code that can
-become a ``LocalizedMessage`` -- a key the dictionary does not have renders to
-the user as the key itself.  Everything else falls to a ``LiteralMessage`` of
-the code, which is worse English and better information than dropping it.
+The executor writes these codes when it refuses a run before the wire.
+Each mapped code has a matching ``failure`` key in the frontend dictionary
+(``frontend/src/locales/console/en-US.ts``); an unmapped code falls back to a
+``LiteralMessage`` of the code, which is worse English and better information
+than dropping it.
 """
 
 

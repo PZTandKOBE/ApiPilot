@@ -43,11 +43,13 @@ from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select, text, update
+from sqlalchemy.orm import lazyload
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.errors import AppError
 from backend.db.models.agent import AgentTask, TestPlan
 from backend.db.models.project import ApiSpec, Project
+from backend.db.models.user import GuestSession
 from backend.schemas.agent import (
     AgentAssertionResponse,
     AgentAuthenticationResponse,
@@ -71,7 +73,7 @@ from backend.schemas.agent_audit import (
     AgentUsageCounts,
     AgentUsageResponse,
 )
-from backend.services import agent_analyzer, agent_audit, agent_plan
+from backend.services import agent_analyzer, agent_audit, agent_plan, plan_hash, plan_structure
 from backend.services.agent_plan import PlanInvalid, PlanPipelineError
 from backend.services.runs import (
     _create_plan_tree,
@@ -82,12 +84,15 @@ from backend.services.runs import (
 from backend.services.spec_identity import derive_spec_identity, probe_document, spec_id_for
 
 __all__ = [
+    "approve_plan",
     "create_task",
     "delete_plan",
+    "get_plan",
     "get_task",
     "list_plans",
     "list_tasks",
     "process_task",
+    "reject_plan",
     "start_task",
 ]
 
@@ -838,6 +843,8 @@ _PLAN_ROW = """
            test_plans.approved_at AS approved_at,
            test_plans.rejected_at AS rejected_at,
            test_plans.rejection_reason AS rejection_reason,
+           test_plans.approved_by_guest_session_id AS approved_by_guest_session_id,
+           test_plans.approved_by_user_id AS approved_by_user_id,
            test_plans.version AS version,
            test_plans.project_id AS project_id,
            test_plans.spec_id AS spec_id,
@@ -907,6 +914,8 @@ _PLAN_LIST = """
            test_plans.approved_at AS approved_at,
            test_plans.rejected_at AS rejected_at,
            test_plans.rejection_reason AS rejection_reason,
+           test_plans.approved_by_guest_session_id AS approved_by_guest_session_id,
+           test_plans.approved_by_user_id AS approved_by_user_id,
            test_plans.version AS version,
            test_plans.project_id AS project_id,
            test_plans.spec_id AS spec_id,
@@ -922,6 +931,38 @@ _PLAN_LIST = """
     WHERE test_plans.project_id = :project
       AND test_plans.deleted_at IS NULL
     ORDER BY api_specs.slug, test_plans.version DESC, test_plans.created_at DESC
+"""
+
+
+_PLAN_BY_PUBLIC_ID = """
+    SELECT test_plans.id AS id,
+           test_plans.public_id AS public_id,
+           test_plans.name AS name,
+           test_plans.description AS goal,
+           test_plans.status AS status,
+           test_plans.risk_level AS risk_level,
+           test_plans.source AS source,
+           test_plans.created_at AS created_at,
+           test_plans.approved_at AS approved_at,
+           test_plans.rejected_at AS rejected_at,
+           test_plans.rejection_reason AS rejection_reason,
+           test_plans.approved_by_guest_session_id AS approved_by_guest_session_id,
+           test_plans.approved_by_user_id AS approved_by_user_id,
+           test_plans.version AS version,
+           test_plans.project_id AS project_id,
+           test_plans.spec_id AS spec_id,
+           api_specs.slug AS slug,
+           (SELECT count(*) FROM test_runs
+            WHERE test_runs.plan_id = test_plans.id) AS run_count,
+           (SELECT max(versions.version) FROM test_plans versions
+            WHERE versions.project_id = test_plans.project_id
+              AND versions.spec_id = test_plans.spec_id
+              AND versions.deleted_at IS NULL) AS current_version
+    FROM test_plans
+    JOIN api_specs ON api_specs.id = test_plans.spec_id
+    WHERE test_plans.project_id = :project
+      AND test_plans.public_id = :public_id
+      AND test_plans.deleted_at IS NULL
 """
 
 
@@ -1011,6 +1052,209 @@ async def delete_plan(session: AsyncSession, *, project: Project, plan_id: str) 
     )
 
 
+
+_PLAN_NOT_FOUND_KEY = "console.plans.notFound"
+_PLAN_INVALID_STATE_KEY = "console.plans.errors.invalidState"
+_PLAN_INVALID_CONTENT_KEY = "console.plans.errors.invalidContent"
+
+_REVIEWABLE_STATUSES = frozenset({"draft", "in_review", "approved", "rejected"})
+
+
+def _plan_not_found(plan_id: str) -> AppError:
+    return AppError(
+        404,
+        code="plan-not-found",
+        message_key=_PLAN_NOT_FOUND_KEY,
+        params={"planId": plan_id},
+    )
+
+
+def _invalid_plan_state(*, plan_id: str, status: str) -> AppError:
+    return AppError(
+        409,
+        code="invalid-plan-state",
+        message_key=_PLAN_INVALID_STATE_KEY,
+        details={"planId": plan_id, "status": status},
+    )
+
+
+async def _locked_plan(
+    session: AsyncSession, *, project_id: uuid.UUID, plan_id: str
+) -> TestPlan:
+    """The plan row, locked for the whole review transaction.
+
+    FOR UPDATE serialises approve against reject, against a second approve and
+    against the soft delete that also writes this row.  The content hash is
+    computed only after the lock is held, so the digest describes the same row
+    state the transition is written against.
+    """
+    row = (
+        await session.execute(
+            select(TestPlan)
+            .options(lazyload(TestPlan.agent_task))
+            .where(
+                TestPlan.project_id == project_id,
+                TestPlan.public_id == plan_id,
+                TestPlan.deleted_at.is_(None),
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        raise _plan_not_found(plan_id)
+
+    return row
+
+
+async def get_plan(
+    session: AsyncSession, *, project_id: str, plan_id: str
+) -> AgentPlanResponse:
+    """One plan tree by its project-scoped public id, or 404."""
+    project = await _lookup_project(session, project_id)
+
+    row = (
+        await session.execute(
+            text(_PLAN_BY_PUBLIC_ID), {"project": project.id, "public_id": plan_id}
+        )
+    ).mappings().one_or_none()
+
+    if row is None:
+        raise _plan_not_found(plan_id)
+
+    current_version = row["current_version"] or row["version"]
+
+    return await _plan_response(
+        session,
+        row,
+        project_id=project_id,
+        spec_id=spec_id_for(row["slug"]),
+        is_current=row["version"] == current_version,
+        run_count=row["run_count"],
+    )
+
+
+def _apply_approval_actor(row: TestPlan, guest: GuestSession) -> None:
+    """Exactly one actor column, matching the project ownership rule."""
+    if guest.user_id is not None:
+        row.approved_by_user_id = guest.user_id
+        row.approved_by_guest_session_id = None
+    else:
+        row.approved_by_guest_session_id = guest.id
+        row.approved_by_user_id = None
+
+
+async def approve_plan(
+    session: AsyncSession, *, project: Project, plan_id: str, guest: GuestSession
+) -> AgentPlanResponse:
+    """Record a server-side approval of the plan content as it stands now.
+
+    The transition is allowed from draft, in_review, rejected and approved.
+    Approving an already-approved plan whose content still matches its receipt
+    is idempotent: the timestamp is not refreshed, so a retried request does not
+    rewrite the moment a human actually reviewed.  If the content changed, the
+    same request re-issues the receipt for the new content (an explicit
+    re-approval, never a silent one).
+    """
+    row = await _locked_plan(session, project_id=project.id, plan_id=plan_id)
+
+    if row.status not in _REVIEWABLE_STATUSES:
+        raise _invalid_plan_state(plan_id=plan_id, status=row.status)
+
+    try:
+        stored = await plan_hash.load_stored_plan(
+            session, plan=row, project_public_id=project.public_id
+        )
+    except plan_hash.PlanContentError as exc:
+        raise AppError(
+            409,
+            code="plan-invalid",
+            message_key=_PLAN_INVALID_CONTENT_KEY,
+            details={"planId": plan_id, "reason": str(exc)},
+        ) from exc
+
+    # A stored plan can be structurally empty even though it loaded as valid
+    # Pydantic data.  Nothing may be approved -- or have an existing approval
+    # refreshed -- unless the tree can actually execute.  This runs before the
+    # status/receipt writes, so a refusal leaves the row untouched.
+    try:
+        plan_structure.validate_executable_plan(stored.payload)
+    except plan_structure.PlanStructureError as exc:
+        raise AppError(
+            409,
+            code="plan-invalid",
+            message_key=_PLAN_INVALID_CONTENT_KEY,
+            details={
+                "planId": plan_id,
+                "reason": str(exc),
+                "issues": exc.as_dicts(),
+            },
+        ) from exc
+
+    already_approved = (
+        row.status == "approved"
+        and row.content_hash == stored.content_hash
+        and (
+            row.approved_by_user_id is not None
+            or row.approved_by_guest_session_id is not None
+        )
+    )
+
+    if not already_approved:
+        row.status = "approved"
+        row.approved_at = datetime.now(timezone.utc)
+        row.content_hash = stored.content_hash
+        row.rejected_at = None
+        row.rejection_reason = None
+        _apply_approval_actor(row, guest)
+        await session.flush()
+
+    return await get_plan(session, project_id=project.public_id, plan_id=plan_id)
+
+
+async def reject_plan(
+    session: AsyncSession,
+    *,
+    project: Project,
+    plan_id: str,
+    guest: GuestSession,
+    reason: str,
+) -> AgentPlanResponse:
+    """Revoke any approval and record why the plan was sent back.
+
+    Rejecting an already-rejected plan is idempotent and keeps the first
+    reviewer's sentence.  The approval credential is cleared in the same
+    transaction, so no run can pass the gate afterwards.
+    """
+    reason = reason.strip()
+    if reason == "":
+        raise AppError(
+            422,
+            code="invalid-request",
+            message_key="console.runs.errors.createFailed",
+            details={"field": "reason", "reason": "must not be blank"},
+        )
+
+    row = await _locked_plan(session, project_id=project.id, plan_id=plan_id)
+
+    if row.status == "rejected":
+        return await get_plan(session, project_id=project.public_id, plan_id=plan_id)
+
+    if row.status not in _REVIEWABLE_STATUSES:
+        raise _invalid_plan_state(plan_id=plan_id, status=row.status)
+
+    row.status = "rejected"
+    row.rejected_at = datetime.now(timezone.utc)
+    row.rejection_reason = reason
+    row.approved_at = None
+    row.content_hash = None
+    row.approved_by_user_id = None
+    row.approved_by_guest_session_id = None
+    await session.flush()
+
+    return await get_plan(session, project_id=project.public_id, plan_id=plan_id)
+
+
 async def _plan_response(
     session: AsyncSession,
     plan: Mapping[str, Any],
@@ -1086,6 +1330,15 @@ async def _plan_response(
         goal=plan["goal"],
         risk_level=plan["risk_level"],
         status=plan["status"],
+        approved_by=(
+            "account"
+            if plan.get("approved_by_user_id") is not None
+            else (
+                "guest"
+                if plan.get("approved_by_guest_session_id") is not None
+                else None
+            )
+        ),
         scenarios=[
             AgentScenarioResponse(
                 id=row["scenario_key"],

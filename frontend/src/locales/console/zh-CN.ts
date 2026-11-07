@@ -653,6 +653,12 @@ export const consoleZhCN = {
     deleteConfirm: '删除计划',
     deleteFailed: '删除计划失败，请重试。',
     deleted: '测试计划已删除。',
+    approveFailed: '批准计划失败，请重试。',
+    rejectFailed: '驳回计划失败，请重试。',
+    errors: {
+      invalidState: '计划当前状态不允许此操作。',
+      invalidContent: '计划内容无法执行，请重新生成。',
+    },
   },
   runs: {
     title: '测试运行',
@@ -716,6 +722,7 @@ export const consoleZhCN = {
       unauthorized: '访客会话已失效，已自动重新建立，请重试。',
       notFound: '未找到该 id 对应的运行。',
       notApproved: '“{plan}”必须经过批准才能运行。',
+      planChanged: '计划在批准后被修改，请重新批准后再运行。',
       noPlan: '目前还没有可运行的已批准计划。',
       createFailed: '无法创建该运行。',
       loadFailed: '无法加载该运行。',
@@ -733,6 +740,7 @@ export const consoleZhCN = {
     failure: {
       heading: '失败原因',
       notExecutable: '该步骤未指定接口，没有可发起的请求。',
+      emptyExecutionTree: '该运行没有可执行的请求步骤，不能判定为通过。',
     },
   },
 

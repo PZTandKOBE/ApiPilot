@@ -54,7 +54,7 @@ describe('pipeline position is derived, never stored', () => {
     expect(agent.completedSteps).toEqual(['spec', 'analyze', 'understanding', 'plan'])
     expect(agent.activePlan?.status).toBe('draft')
 
-    agent.approvePlan(agent.activePlan?.id ?? '')
+    await agent.approvePlan(agent.activePlan?.id ?? '')
     expect(agent.step).toBe('execute')
   })
 })
@@ -203,7 +203,7 @@ describe('the approval boundary', () => {
     const { agent, planId } = await withPlan()
     agent.startReview(planId)
 
-    expect(agent.rejectPlan(planId, '   ')).toBe(false)
+    expect(await agent.rejectPlan(planId, '   ')).toBe(false)
     expect(agent.activePlan?.status).toBe('in_review')
     expect(agent.activePlan?.rejectionReason).toBeNull()
   })
@@ -212,7 +212,7 @@ describe('the approval boundary', () => {
     const { agent, planId } = await withPlan()
     agent.startReview(planId)
 
-    expect(agent.rejectPlan(planId, '  Missing the refund path.  ')).toBe(true)
+    expect(await agent.rejectPlan(planId, '  Missing the refund path.  ')).toBe(true)
     expect(agent.activePlan?.status).toBe('rejected')
     expect(agent.activePlan?.rejectionReason).toBe('Missing the refund path.')
     expect(agent.activePlan?.rejectedAt).not.toBeNull()
@@ -221,16 +221,18 @@ describe('the approval boundary', () => {
   it('approves, and is the only path to an approved plan', async () => {
     const { agent, planId } = await withPlan()
     agent.startReview(planId)
-    agent.approvePlan(planId)
+    expect(await agent.approvePlan(planId)).toBe(true)
 
     expect(agent.activePlan?.status).toBe('approved')
     expect(agent.activePlan?.approvedAt).not.toBeNull()
     expect(agent.activePlan?.rejectionReason).toBeNull()
+    // The mock answers `guest`, and the store adopts that server answer.
+    expect(agent.activePlan?.approvedBy).toBe('guest')
   })
 
   it('leaves the approved plan approved when regeneration is refused', async () => {
     const { agent, planId } = await withPlan()
-    agent.approvePlan(planId)
+    await agent.approvePlan(planId)
     expect(agent.activePlan?.status).toBe('approved')
 
     await agent.generatePlan()
@@ -249,7 +251,7 @@ describe('metadata editing', () => {
     await context.agent.analyzeSpec()
 
     const planId = context.agent.activePlan?.id ?? ''
-    context.agent.approvePlan(planId)
+    await context.agent.approvePlan(planId)
     return { ...context, planId }
   }
 

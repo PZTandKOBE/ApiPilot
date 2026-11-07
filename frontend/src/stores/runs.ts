@@ -256,7 +256,10 @@ export const useRunsStore = defineStore('runs', () => {
 
     // The backend re-checks this; so does the store. Not because the store's
     // answer is authoritative — it is not — but because sending a request
-    // that is going to be refused is a worse way to find out.
+    // that is going to be refused is a worse way to find out.  The server's
+    // own refusals reach the view through the run error vocabulary:
+    // not-approved, plan-not-found, plan-changed, invalid-plan-state and
+    // plan-invalid each keep their own sentence.
     if (plan.status !== 'approved') {
       error.value = {
         code: 'not-approved',

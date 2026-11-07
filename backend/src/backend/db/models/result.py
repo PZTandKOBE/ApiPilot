@@ -12,9 +12,11 @@ Below ``test_runs`` sits the run detail tree -- ``run_scenarios``,
 a *snapshot* tree: every row is a copy of what the plan said at the moment it
 executed, so a plan edited or regenerated afterwards cannot rewrite a finished
 run.  That is why ``run_steps`` carries its own ``description`` / ``method`` /
-``path`` instead of reaching back through ``source_step_id``, and why the
-``source_*`` columns are nullable with ``SET NULL`` rather than ``NOT NULL``:
-history must survive the deletion of what it came from.
+``path`` / ``produces`` / ``body`` / ``body_present`` / ``source_path`` /
+``source_step_key`` instead of reaching back through ``source_step_id``, and why
+the ``source_*`` columns are nullable with ``SET NULL`` rather than ``NOT NULL``:
+history must survive the deletion of what it came from.  ``test_runs.snapshot_version``
+records whether a run's snapshot is complete (1) or predates that guarantee (0).
 
 Two rules hold across all five tables.
 
@@ -46,12 +48,14 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     LargeBinary,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
@@ -224,6 +228,12 @@ class TestRun(UUIDPrimaryKeyMixin, CreatedAtMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     variable_keys: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
+    # 1 = every execution field was snapshotted at creation (or proven by the
+    # migration); 0 = historical run whose snapshot is incomplete.  The
+    # executor refuses a 0 instead of falling back to the mutable plan tables.
+    snapshot_version: Mapped[int] = mapped_column(
+        SmallInteger, nullable=False, default=1, server_default=text("1")
+    )
     error_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
@@ -421,6 +431,14 @@ class RunStep(UUIDPrimaryKeyMixin, Base):
     # plan row, so a later plan edit cannot rewrite what an earlier run read.
     source_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source_step_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # The execution fields that used to be re-read from test_steps at run time.
+    # ``body`` is JSONB: SQL NULL means "no body", JSON null is a legal body and
+    # is distinguished from absence by ``body_present``.
+    produces: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    body: Mapped[Any | None] = mapped_column(JSONB, nullable=True)
+    body_present: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False)
     status: Mapped[str] = mapped_column(
         String(30), nullable=False, default="pending", server_default=text("'pending'")

@@ -8,14 +8,16 @@ the live stream carries.  It is deterministic on purpose: no model, no planner,
 no retry, no parallel steps.  The plan says what to test; this says what
 happened.
 
-**It executes the snapshot, not the plan.**  Everything it needs was frozen onto
-``run_scenarios`` / ``run_steps`` / ``run_assertions`` when the run was created,
-which is what makes a plan edited mid-run irrelevant to the run in flight.  There
-is exactly one exception, and it is a gap rather than a decision: an ``extract``
-step learns *which* variable it produces from ``test_steps.produces``, because
-``run_steps`` has no such column and adding one is a migration this phase does
-not make.  It reads that one field through ``source_step_id``; nothing else here
-touches the plan side.
+**It executes the snapshot, not the plan.**  Everything it needs -- scenario
+order, step type, method, path, request body and its presence flag, the Extract
+source, and the variable a step produces -- is frozen onto ``run_scenarios`` /
+``run_steps`` / ``run_assertions`` when the run is created.  No plan table is
+read at execution time, so editing, soft-deleting or removing plan children
+cannot change what a created run sends.
+
+A run whose ``snapshot_version`` is below 1 predates that complete snapshot.
+It is refused with ``snapshot-unavailable`` before any HTTP request instead of
+falling back to the plan, which may have changed since the run was made.
 
 **Every boundary commits.**  The result rows and the event that announces them go
 in one transaction, and that transaction ends immediately -- before the next
@@ -62,7 +64,6 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.db.database import AsyncSessionLocal
-from backend.db.models.agent import TestStep
 from backend.db.models.project import EnvironmentAuth, EnvironmentVariable
 from backend.db.models.result import (
     RunAssertion,
@@ -123,6 +124,8 @@ EXTRACT_FAILED = "extract-failed"
 PRESENT_SENTINEL = "present"
 NOT_EXECUTABLE = "not-executable"
 EXECUTOR_FAILED = "executor-failed"
+SNAPSHOT_UNAVAILABLE = "snapshot-unavailable"
+EMPTY_EXECUTION_TREE = "empty-execution-tree"
 ASSERTION_FAILED = "assertion-failed"
 """Stable, safe codes: they are what a client reads when a code has no sentence.
 
@@ -577,6 +580,7 @@ class _RunFacts:
     environment_id: uuid.UUID | None
     base_url: str
     status: str
+    snapshot_version: int
 
 
 async def _load_run(session: AsyncSession, run_id: uuid.UUID) -> _RunFacts | None:
@@ -587,6 +591,7 @@ async def _load_run(session: AsyncSession, run_id: uuid.UUID) -> _RunFacts | Non
                 TestRun.environment_id,
                 TestRun.base_url,
                 TestRun.status,
+                TestRun.snapshot_version,
             ).where(TestRun.id == run_id)
         )
     ).one_or_none()
@@ -599,6 +604,7 @@ async def _load_run(session: AsyncSession, run_id: uuid.UUID) -> _RunFacts | Non
         environment_id=row.environment_id,
         base_url=row.base_url,
         status=row.status,
+        snapshot_version=row.snapshot_version,
     )
 
 
@@ -644,92 +650,6 @@ async def _load_auth(
     return None if row is None else (row.auth_type, row.config)
 
 
-async def _load_produced(session: AsyncSession, step_ids: list[uuid.UUID]) -> dict[uuid.UUID, str]:
-    """Which variable each step produces -- the one field the snapshot does not carry.
-
-    ``run_steps`` has no ``produces`` column (the plan's step does), so an
-    ``extract`` step learns its variable here, through the ``source_step_id`` link
-    the create path already writes.  A step whose plan row has since gone keeps a
-    NULL link and simply has nothing to extract into -- which the extract step
-    reports as its own failure rather than as a crash.
-    """
-    if not step_ids:
-        return {}
-
-    rows = (
-        await session.execute(
-            select(RunStep.id, TestStep.produces)
-            .join(TestStep, TestStep.id == RunStep.source_step_id)
-            .where(RunStep.id.in_(step_ids))
-        )
-    ).all()
-
-    return {step_id: produces for step_id, produces in rows if produces is not None}
-
-
-async def _load_sources(
-    session: AsyncSession, step_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, tuple[str | None, str | None]]:
-    """The Extract source path and source request step, from the plan row.
-
-    The run snapshot does not carry either field; like produces, they live on
-    the plan step and are reached through source_step_id.  A legacy plan row has
-    no such config and returns no source tuple, which keeps the old lookup path
-    available without inventing a source.
-    """
-    if not step_ids:
-        return {}
-
-    rows = (
-        await session.execute(
-            select(RunStep.id, TestStep.config)
-            .join(TestStep, TestStep.id == RunStep.source_step_id)
-            .where(RunStep.id.in_(step_ids))
-        )
-    ).all()
-
-    sources: dict[uuid.UUID, tuple[str | None, str | None]] = {}
-    for step_id, config in rows:
-        if not isinstance(config, dict):
-            continue
-        source_path = config.get("sourcePath")
-        source_step = config.get("sourceStepId")
-        path = source_path if isinstance(source_path, str) and source_path.strip() else None
-        key = source_step if isinstance(source_step, str) and source_step.strip() else None
-        if path is not None or key is not None:
-            sources[step_id] = (path, key)
-    return sources
-
-
-async def _load_bodies(
-    session: AsyncSession, step_ids: list[uuid.UUID]
-) -> dict[uuid.UUID, tuple[Any, bool]]:
-    """The request body each step sends, read from the plan step it came from.
-
-    run_steps stays self-contained for everything it snapshots, but the body is
-    not one of those columns: it lives in test_steps.config, the JSONB blob the
-    plan already materialises, and is found through the same source_step_id link
-    produces uses.  A step whose plan row is gone has no body, which is the same
-    as a plan that never had one.
-    """
-    if not step_ids:
-        return {}
-
-    rows = (
-        await session.execute(
-            select(RunStep.id, TestStep.config)
-            .join(TestStep, TestStep.id == RunStep.source_step_id)
-            .where(RunStep.id.in_(step_ids))
-        )
-    ).all()
-
-    bodies: dict[uuid.UUID, tuple[Any, bool]] = {}
-    for step_id, config in rows:
-        if isinstance(config, dict) and config.get("bodyPresent") is True:
-            bodies[step_id] = (config.get("body"), True)
-    return bodies
-
-
 async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario]:
     """The run's scenarios, steps and assertions, each level ordered explicitly.
 
@@ -762,6 +682,9 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
                 RunStep.path,
                 RunStep.source_path,
                 RunStep.source_step_key,
+                RunStep.produces,
+                RunStep.body,
+                RunStep.body_present,
             )
             .where(RunStep.run_scenario_id.in_(scenario_ids))
             .order_by(RunStep.run_scenario_id, RunStep.sort_order, RunStep.step_key)
@@ -784,10 +707,6 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
         )
     ).all()
 
-    produced = await _load_produced(session, [row.id for row in step_rows])
-    bodies = await _load_bodies(session, [row.id for row in step_rows])
-    sources = await _load_sources(session, [row.id for row in step_rows])
-
     steps_by_scenario: dict[uuid.UUID, list[_Step]] = {}
     for row in step_rows:
         steps_by_scenario.setdefault(row.run_scenario_id, []).append(
@@ -797,11 +716,14 @@ async def _load_tree(session: AsyncSession, run_id: uuid.UUID) -> list[_Scenario
                 kind=row.step_type,
                 method=row.method,
                 path=row.path,
-                produces=produced.get(row.id),
-                body=bodies.get(row.id, (None, False))[0],
-                body_present=bodies.get(row.id, (None, False))[1],
-                source_path=row.source_path or sources.get(row.id, (None, None))[0],
-                source_step_key=row.source_step_key or sources.get(row.id, (None, None))[1],
+                # Every execution field comes from this row.  The plan tables
+                # are not consulted, so editing or deleting them cannot change
+                # what a created run sends.
+                produces=row.produces,
+                body=row.body,
+                body_present=row.body_present,
+                source_path=row.source_path,
+                source_step_key=row.source_step_key,
             )
         )
 
@@ -1729,9 +1651,54 @@ async def _execute(run_id: uuid.UUID) -> None:
 
             return
 
+        if facts.snapshot_version < 1:
+            # A run created before run_steps carried the whole execution
+            # snapshot.  Its missing fields cannot be recovered without reading
+            # the plan, which may have changed since; refusing is the only
+            # honest option, and it happens before any HTTP request.
+            logger.warning(
+                "run %s: snapshot_version=%s, refusing to execute a legacy snapshot",
+                run_id,
+                facts.snapshot_version,
+            )
+            await _fail_run(
+                run_id,
+                code=SNAPSHOT_UNAVAILABLE,
+                detail=(
+                    "this run predates immutable plan snapshots and cannot be "
+                    "executed; create a new run from the plan"
+                ),
+            )
+            return
+
+        scenarios = await _load_tree(session, run_id)
+
+        # The snapshot is structurally valid only if it contains something the
+        # executor can actually call.  An empty tree would otherwise walk zero
+        # scenarios, record no failure and be reported as passed -- a run that
+        # never sent a request must never be green.  This is checked before the
+        # environment is loaded, before run.started and before any HTTP client.
+        if (
+            not scenarios
+            or any(not scenario.steps for scenario in scenarios)
+            or any(
+                not any(step.kind == "request" for step in scenario.steps)
+                for scenario in scenarios
+            )
+        ):
+            logger.warning("run %s: refusing an empty execution tree", run_id)
+            await _fail_run(
+                run_id,
+                code=EMPTY_EXECUTION_TREE,
+                detail=(
+                    "the run snapshot contains no executable request steps; "
+                    "recreate it from a non-empty plan"
+                ),
+            )
+            return
+
         variables = await _load_variables(session, facts.environment_id)
         auth = await _load_auth(session, facts.environment_id)
-        scenarios = await _load_tree(session, run_id)
 
         context = RunExecutionContext(
             run_id=run_id,

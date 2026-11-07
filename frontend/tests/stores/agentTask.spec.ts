@@ -82,7 +82,7 @@ describe('running a task', () => {
     await agent.loadDemoSpec()
     await agent.analyzeSpec()
 
-    agent.approvePlan(agent.activePlan?.id ?? '')
+    await agent.approvePlan(agent.activePlan?.id ?? '')
 
     // Captured after the approval: approving replaces the plan object, so a
     // snapshot taken before it would report the draft's nulls.
@@ -148,7 +148,7 @@ describe('regenerating a plan', () => {
     expect(first).not.toBeNull()
     if (first === null) return
 
-    agent.approvePlan(first.id)
+    await agent.approvePlan(first.id)
     const approved = agent.projectPlans.find((plan) => plan.id === first.id)
     expect(approved?.status).toBe('approved')
     const approvedScenarios = JSON.stringify(approved?.scenarios)
@@ -178,7 +178,7 @@ describe('regenerating a plan', () => {
     expect(first).not.toBeNull()
     if (first === null) return
 
-    agent.approvePlan(first.id)
+    await agent.approvePlan(first.id)
     await agent.regeneratePlan()
     await agent.loadPlans()
 

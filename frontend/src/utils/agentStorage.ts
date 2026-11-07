@@ -186,6 +186,12 @@ export const sanitizePlans = (value: unknown): readonly TestPlan[] => {
       rejectedAt: typeof plan.rejectedAt === 'string' ? plan.rejectedAt : null,
       rejectionReason:
         typeof plan.rejectionReason === 'string' ? plan.rejectionReason : null,
+      // The server records the actor; a stored value that is neither kind is
+      // not an authorisation and must not survive the rebuild.
+      approvedBy:
+        plan.approvedBy === 'account' || plan.approvedBy === 'guest'
+          ? plan.approvedBy
+          : null,
     }
   })
 }

@@ -38,6 +38,20 @@ const approveOpen = ref(false)
 const rejectOpen = ref(false)
 const rejectReason = ref('')
 
+/** A review request is in flight; both dialogs must wait for it. */
+const submitting = computed(() => store.approvalPending)
+
+/**
+ * The sentence a refused review gets.
+ *
+ * The store keeps the server's own `messageKey` (it is the only place that
+ * knows the code), and this falls back to the operation's sentence when the
+ * failure did not come from the server.  Never render a raw key: a dialog that
+ * silently closes on failure hides the one useful piece of information.
+ */
+const reviewFailure = (fallbackKey: string): string =>
+  t(store.approvalError?.messageKey ?? fallbackKey, store.approvalError?.params)
+
 const plan = computed(() => props.plan ?? store.activePlan)
 
 /** The single gate. Only an approved plan is executable. */
@@ -82,21 +96,44 @@ const openApprove = (): void => {
   approveOpen.value = true
 }
 
-const confirmApprove = (): void => {
+/**
+ * Approval is a server round trip, not a local flag flip.
+ *
+ * The server writes the receipt that run creation reads, so this waits for it
+ * and adopts its answer.  On failure the dialog stays open and the error is
+ * shown; closing it would leave the user believing the plan was approved when
+ * the next run would be refused with 409.
+ */
+const confirmApprove = async (): Promise<void> => {
   const current = plan.value
-  if (current === null) return
+  if (current === null || submitting.value) return
 
-  store.approvePlan(current.id)
+  const approved = await store.approvePlan(current.id)
+
+  if (!approved) {
+    ElMessage.error(reviewFailure('console.plans.approveFailed'))
+    return
+  }
+
   approveOpen.value = false
+  // The store adopted the server's plan, so the status tag now renders the
+  // persisted status (and `approvedBy`) rather than a local guess.
   ElMessage.success(t('console.aiTest.approval.approved'))
 }
 
-const confirmReject = (): void => {
+const confirmReject = async (): Promise<void> => {
   const current = plan.value
-  if (current === null) return
+  if (current === null || submitting.value) return
 
-  if (!store.rejectPlan(current.id, rejectReason.value)) {
+  if (rejectReason.value.trim() === '') {
     ElMessage.warning(t('console.aiTest.approval.reasonRequired'))
+    return
+  }
+
+  const rejected = await store.rejectPlan(current.id, rejectReason.value)
+
+  if (!rejected) {
+    ElMessage.error(reviewFailure('console.plans.rejectFailed'))
     return
   }
 
@@ -129,11 +166,22 @@ const onRun = (): void => {
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
-        <ElButton v-if="decidable" size="small" @click="rejectOpen = true">
+        <ElButton
+          v-if="decidable"
+          size="small"
+          :disabled="submitting"
+          @click="rejectOpen = true"
+        >
           {{ t('console.aiTest.approval.reject') }}
         </ElButton>
 
-        <ElButton v-if="decidable" size="small" type="primary" @click="openApprove">
+        <ElButton
+          v-if="decidable"
+          size="small"
+          type="primary"
+          :disabled="submitting"
+          @click="openApprove"
+        >
           {{ t('console.aiTest.approval.approve') }}
         </ElButton>
 
@@ -185,10 +233,10 @@ const onRun = (): void => {
       </p>
 
       <template #footer>
-        <ElButton text @click="approveOpen = false">
+        <ElButton text :disabled="submitting" @click="approveOpen = false">
           {{ t('console.aiTest.approval.cancel') }}
         </ElButton>
-        <ElButton type="primary" @click="confirmApprove">
+        <ElButton type="primary" :loading="submitting" @click="confirmApprove">
           {{ t('console.aiTest.approval.approveConfirm') }}
         </ElButton>
       </template>
@@ -213,17 +261,20 @@ const onRun = (): void => {
           type="textarea"
           :rows="3"
           resize="none"
+          maxlength="1000"
+          show-word-limit
           :placeholder="t('console.aiTest.approval.rejectReasonPlaceholder')"
         />
       </label>
 
       <template #footer>
-        <ElButton text @click="rejectOpen = false">
+        <ElButton text :disabled="submitting" @click="rejectOpen = false">
           {{ t('console.aiTest.approval.cancel') }}
         </ElButton>
         <ElButton
           type="danger"
-          :disabled="rejectReason.trim() === ''"
+          :disabled="rejectReason.trim() === '' || submitting"
+          :loading="submitting"
           @click="confirmReject"
         >
           {{ t('console.aiTest.approval.rejectConfirm') }}

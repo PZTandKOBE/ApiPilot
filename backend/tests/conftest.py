@@ -269,10 +269,14 @@ class _Fixtures:
             public_id=f"c4plan_{self._tag}_{uuid.uuid4().hex[:8]}",
             name={"text": "C4 scratch plan"},
             description={"text": "Created by backend/tests."},
-            status="approved",
+            # Draft, not approved: since the server-side approval receipt
+            # exists, an approved row must carry an actor and a content hash,
+            # and a fixture that simply asserts approval would be fabricating a
+            # receipt.  Tests that need a runnable plan approve it through
+            # tests.plan_support, which computes the real fingerprint.
+            status="draft",
             risk_level="low",
             source="human",
-            approved_at=datetime.now(timezone.utc),
         )
         self.session.add(row)
         return await self._keep(TestPlan, row)
@@ -387,7 +391,23 @@ class _Fixtures:
         """
         if not self.created:
             return
+        # Release anything the test left open first.  A refused run create now
+        # holds FOR SHARE on the plan row until its session ends, and the
+        # cleanup's DELETE would wait on that transaction rather than report
+        # the real failure.
+        await self.session.rollback()
         async with database.AsyncSessionLocal() as session:
+            # Roots first.  A project owns specs, environments, plans and runs
+            # by CASCADE, and deleting the root removes rows created by helpers
+            # that never went through _keep; the per-row pass below would hit
+            # NO ACTION foreign keys otherwise (a plan created by a helper
+            # still points at the tracked spec).
+            roots = (Project, TestRun, AgentTask)
+            for model, row_id in reversed(self.created):
+                if model in roots:
+                    await session.execute(delete(model).where(model.id == row_id))
+            await session.commit()
+
             for model, row_id in reversed(self.created):
                 if model is TestRun:
                     await session.execute(

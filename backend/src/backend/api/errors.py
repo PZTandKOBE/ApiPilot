@@ -114,6 +114,8 @@ RUN_MESSAGE_KEYS: frozenset[str] = frozenset(
         "console.runs.errors.cancelFailed",
         "console.runs.errors.dismiss",
         "console.runs.failure.notExecutable",
+        "console.runs.failure.emptyExecutionTree",
+        "console.plans.errors.invalidContent",
         "console.report.notFound",
         "console.report.notReady",
         "console.report.generateFailed",

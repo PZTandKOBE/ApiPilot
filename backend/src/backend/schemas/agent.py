@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal, Any
 
-from pydantic import Field
+from pydantic import Field, field_validator
 
 from backend.schemas.base import Schema
 from backend.schemas.common import LocalizedText
@@ -49,6 +49,7 @@ __all__ = [
     "AgentTaskSummaryResponse",
     "AgentUnderstandingResponse",
     "AgentVerdict",
+    "PlanRejectRequest",
 ]
 
 AgentTaskStatus = Literal["pending", "analyzing", "completed", "failed"]
@@ -99,6 +100,28 @@ class AgentTaskCreateRequest(Schema):
             "same project/document series and never overwrites the old plan."
         ),
     )
+
+
+class PlanRejectRequest(Schema):
+    """The body of `POST /api/projects/{project_id}/plans/{plan_id}/reject`.
+
+    A rejection without a reason is refused: the reviewer's sentence is the one
+    thing the agent author cannot reconstruct from state.
+    """
+
+    reason: str = Field(
+        min_length=1,
+        max_length=1000,
+        description="Why the plan was sent back. Trimmed; blank is a 422.",
+    )
+
+    @field_validator("reason")
+    @classmethod
+    def _trimmed(cls, value: str) -> str:
+        trimmed = value.strip()
+        if trimmed == "":
+            raise ValueError("reason must not be blank")
+        return trimmed
 
 
 class AgentAssertionResponse(Schema):
@@ -204,7 +227,19 @@ class AgentPlanResponse(Schema):
         default=None, description="`test_plans.description`, the only prose column."
     )
     risk_level: str
-    status: str = Field(description="Always draft from this pipeline.")
+    status: str = Field(
+        description=(
+            "test_plans.status: draft until a human approves it through "
+            "POST /projects/{id}/plans/{plan_id}/approve."
+        )
+    )
+    approved_by: Literal["guest", "account"] | None = Field(
+        default=None,
+        description=(
+            "Who holds the approval receipt: a browser guest or an account. "
+            "The internal actor id is never exposed."
+        ),
+    )
     scenarios: list[AgentScenarioResponse] = Field(default_factory=list)
     source: str
     generated_at: datetime

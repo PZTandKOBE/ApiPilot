@@ -64,7 +64,7 @@ describe('regeneration failure', () => {
     expect(before).not.toBeNull()
     if (before === null) return
 
-    agent.approvePlan(before.id)
+    await agent.approvePlan(before.id)
     const approved = agent.projectPlans.find((plan) => plan.id === before.id)
     const snapshot = JSON.stringify(agent.projectPlans)
 

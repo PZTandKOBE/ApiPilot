@@ -202,23 +202,22 @@ async def create_run(
 ) -> RunResponse:
     """Create a run from a plan, its specification document, and a base URL.
 
-    The service owns the transaction: it re-checks ``plan.status`` against the
-    same rule the client applies, materialises the spec and plan rows the four
-    NOT NULL foreign keys require, fans the plan out into ``run_*`` rows, and
-    commits once -- all before this returns 201.  A failure at any point leaves
-    nothing behind.
+    The service owns the transaction: it looks the plan up by ``planId`` inside
+    this project, reads the stored ``status`` and content fingerprint, snapshots
+    the *stored* plan tree, and commits once -- all before this returns 201.  A
+    failure at any point leaves nothing behind.
 
-    **The approval check is not an authority.**  ``plan.status`` arrives in the
-    body, so this refuses a request the browser would have refused; it does not
-    establish that anyone reviewed anything.  There is no Plan Approval API.
+    **The approval check is an authority here.**  The status is read from
+    ``test_plans``, written only by ``POST /plans/{plan_id}/approve``, and the
+    fingerprint proves the tree still matches the content that was approved.  The
+    ``plan.status`` field in this body is accepted for wire compatibility and
+    ignored: a request cannot approve a plan by claiming it is approved.
     """
-    # The path's project first, then the one reference the body carries.  The plan
-    # is *defined* in the body, not referenced by it -- the service materialises the
-    # plan row inside the project authorised here, so there is no plan id that could
-    # point at somebody else's project.  The environment id is a real reference, and
-    # it is looked up *inside* this project: an id from another project is
-    # indistinguishable from one that does not exist, and nothing is created until
-    # both answers are yes.
+    # The path's project first, then the plan reference.  The plan must already
+    # exist in this project: the lookup is project-scoped, so an id from another
+    # project is indistinguishable from one that does not exist.  The environment
+    # id is a real reference and is looked up inside the same project.  Nothing is
+    # written until the plan is found, approved and unchanged.
     project = await guest_access.require_guest_project_access(
         session, project_public_id=project_id, guest=guest
     )

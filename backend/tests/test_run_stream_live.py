@@ -37,6 +37,7 @@ from backend.schemas.run import RunCreateRequest
 from backend.services import guest_session, run_executor, runs
 from backend.services.guest_session import hash_token
 
+from tests.plan_support import persist_approved_plan
 from tests.test_run_execution import ENVIRONMENT_ID, _project_public_id, _run_body
 
 pytestmark = pytest.mark.anyio
@@ -162,6 +163,15 @@ async def _seed_owner(fixtures, stack) -> tuple[str, uuid.UUID]:
 async def _create_run(fixtures, project_id: uuid.UUID, monkeypatch):
     public_id = await _project_public_id(fixtures, project_id)
 
+    payload = RunCreateRequest.model_validate(_run_body(public_id))
+
+    await persist_approved_plan(
+        fixtures.session,
+        project_id=project_id,
+        payload=payload,
+        project_public_id=public_id,
+    )
+
     async def _do_not_schedule(run_id):
         return None
 
@@ -169,7 +179,7 @@ async def _create_run(fixtures, project_id: uuid.UUID, monkeypatch):
     response = await runs.create_run(
         fixtures.session,
         project_id=public_id,
-        payload=RunCreateRequest.model_validate(_run_body(public_id)),
+        payload=payload,
     )
     return uuid.UUID(str(response.id))
 

@@ -74,7 +74,7 @@ const withFinishedRun = async () => {
   await agent.loadDemoSpec()
   await agent.analyzeSpec()
   await agent.generatePlan()
-  agent.approvePlan(agent.activePlan?.id ?? '')
+  await agent.approvePlan(agent.activePlan?.id ?? '')
   const run = await runs.createRun({ immediate: true })
   const runId = run?.id ?? ''
   await runs.openRun(runId, { immediate: true })
@@ -135,7 +135,7 @@ describe('run report page', () => {
     await agent.loadDemoSpec()
     await agent.analyzeSpec()
     await agent.generatePlan()
-    agent.approvePlan(agent.activePlan?.id ?? '')
+    await agent.approvePlan(agent.activePlan?.id ?? '')
     const run = await runs.createRun({ immediate: false })
     await runs.openRun(run?.id ?? '', { immediate: true })
 

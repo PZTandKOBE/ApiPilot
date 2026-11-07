@@ -46,7 +46,7 @@ const withApprovedPlan = async () => {
   await context.agent.analyzeSpec()
   await context.agent.generatePlan()
 
-  context.agent.approvePlan(context.agent.activePlan?.id ?? '')
+  await context.agent.approvePlan(context.agent.activePlan?.id ?? '')
 
   return context
 }

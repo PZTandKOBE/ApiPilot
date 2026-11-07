@@ -283,6 +283,34 @@ describe('the run service, over HTTP', () => {
     })
   })
 
+  it('keeps plan-changed as its own sentence instead of folding it into create-failed', async () => {
+    respondWith(
+      {
+        code: 'plan-changed',
+        messageKey: 'console.runs.errors.planChanged',
+        params: { plan: 'Orders' },
+      },
+      409,
+    )
+    const service = createHttpRunService()
+
+    await expect(service.createRun(createInput())).rejects.toMatchObject({
+      detail: {
+        code: 'plan-changed',
+        messageKey: 'console.runs.errors.planChanged',
+      },
+    })
+  })
+
+  it('maps a deleted plan to the shared plan sentence', async () => {
+    respondWith({ code: 'plan-not-found', messageKey: 'console.plans.notFound' }, 404)
+    const service = createHttpRunService()
+
+    await expect(service.createRun(createInput())).rejects.toMatchObject({
+      detail: { code: 'plan-not-found', messageKey: 'console.plans.notFound' },
+    })
+  })
+
   it('turns a missing run into the not-found error, not a generic failure', async () => {
     respondWith({ code: 'run-not-found', messageKey: 'console.runs.errors.notFound' }, 404)
     const service = createHttpRunService()
@@ -719,7 +747,7 @@ describe('the store, against the events a stream can deliver', () => {
     await agent.loadDemoSpec()
     await agent.analyzeSpec()
     await agent.generatePlan()
-    agent.approvePlan(agent.activePlan?.id ?? '')
+    await agent.approvePlan(agent.activePlan?.id ?? '')
 
     const run = await runs.createRun({ immediate: true })
 

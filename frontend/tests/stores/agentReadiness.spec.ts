@@ -213,7 +213,11 @@ describe('actions that do not need a project are left alone', () => {
     expect(agent.analysisError).toBeNull()
   })
 
-  it('keeps the approval actions local', async () => {
+  it('sends the review to the plan service even when the project gate is refused', async () => {
+    // Approval used to be a local status flip, which is exactly the bug this
+    // release removes: the server now owns the receipt, so the action must
+    // reach it.  The plan id already carries its project, so the project
+    // readiness gate (which guards *task* scoping) is not on this path.
     const { agent, project } = setup()
 
     await agent.loadDemoSpec()
@@ -225,12 +229,13 @@ describe('actions that do not need a project are left alone', () => {
     agent.startReview(planId)
     expect(agent.activePlan?.status).toBe('in_review')
 
-    expect(agent.rejectPlan(planId, '   ')).toBe(false)
-    expect(agent.rejectPlan(planId, '  Missing the refund path.  ')).toBe(true)
+    expect(await agent.rejectPlan(planId, '   ')).toBe(false)
+    expect(await agent.rejectPlan(planId, '  Missing the refund path.  ')).toBe(true)
     expect(agent.activePlan?.rejectionReason).toBe('Missing the refund path.')
 
-    agent.approvePlan(planId)
+    expect(await agent.approvePlan(planId)).toBe(true)
     expect(agent.activePlan?.status).toBe('approved')
+    expect(agent.activePlan?.approvedBy).toBe('guest')
 
     agent.updatePlanMeta(planId, { name: 'Renamed', goal: 'Regoaled' })
     expect(agent.activePlan?.name).toEqual({ text: 'Renamed' })

@@ -32,6 +32,8 @@ from backend.services import agent, agent_analyzer
 from backend.services.agent import derive_spec_identity, probe_document
 from backend.services.agent_plan import PlanPipelineError
 
+from tests.plan_support import approve_plan_by_id
+
 pytestmark = pytest.mark.anyio
 
 ORDERS_DOCUMENT: dict[str, Any] = {
@@ -420,7 +422,13 @@ async def test_new_version_starts_draft_and_old_approval_is_untouched(
                 select(_TestPlan).where(_TestPlan.public_id == ORDERS_PLAN_ID)
             )
         ).scalar_one()
-        old_row.status = "approved"
+        # A real receipt, not a status string: an approved row must carry an
+        # actor and the fingerprint of its content (the schema enforces both).
+        await approve_plan_by_id(
+            fixtures.session,
+            project_id=stack["project"],
+            plan_row_id=old_row.id,
+        )
         await fixtures.session.commit()
 
         second = await _run_task(fixtures, stack, regenerate=True)

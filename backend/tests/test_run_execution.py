@@ -6,7 +6,8 @@ the four claims apart, because each can hold while the next one fails:
 
 1. **The run was created** -- a test_runs row exists in queued.
 2. **The snapshot is correct** -- run_scenarios / run_steps / run_assertions mirror
-   the plan, including the method and path the executor will call.
+   the plan, including method, path, body/body_present, produces and the Extract
+   source the executor will use.
 3. **The executor actually ran** -- the real _execute walked the scenarios and sent
    the requests it was told to send.
 4. **The events are the run real history** -- written by append_run_event, seq
@@ -18,10 +19,10 @@ subclass carrying httpx.MockTransport.  Every other line of the executor -- stat
 transitions, variable resolution, assertion evaluation, evidence, events, settlement
 -- is the production one.  That is the same convention test_run_recovery.py uses.
 
-Approval is exercised through the service own gate, runs._check_approval: the plan
-submitted here carries status="approved" because that is what the current contract
-requires a client to state.  See the C16 record for why that is a client-side
-authority and not a server-side one.
+Approval is exercised through the product's gate: tests/plan_support.py persists
+the plan and issues the server-side receipt the run create reads.  The plan
+status carried in the request body is accepted for wire compatibility and is not
+an authority.
 """
 
 from __future__ import annotations
@@ -46,6 +47,8 @@ from backend.schemas.run import RunCreateRequest
 from backend.services import agent as agent_service
 from backend.services import run_executor, runs
 from backend.services.agent import derive_spec_identity, probe_document
+
+from tests.plan_support import persist_approved_plan
 
 pytestmark = pytest.mark.anyio
 
@@ -301,6 +304,13 @@ async def _create_run(
     public_id = await _project_public_id(fixtures, stack["project"])
     payload = RunCreateRequest.model_validate(
         _run_body(public_id, status=status, plan=plan)
+    )
+
+    await persist_approved_plan(
+        fixtures.session,
+        project_id=stack["project"],
+        payload=payload,
+        project_public_id=public_id,
     )
 
     async def _do_not_schedule(run_id):
@@ -818,9 +828,18 @@ async def test_a_failed_assertion_fails_the_step_and_the_run(
     async def _do_not_schedule(run_id):
         return None
 
+    payload = RunCreateRequest.model_validate(body)
+
+    await persist_approved_plan(
+        fixtures.session,
+        project_id=stack["project"],
+        payload=payload,
+        project_public_id=public_id,
+    )
+
     monkeypatch.setattr(run_executor, "schedule_run", _do_not_schedule)
     response = await runs.create_run(
-        fixtures.session, project_id=public_id, payload=RunCreateRequest.model_validate(body)
+        fixtures.session, project_id=public_id, payload=payload
     )
     run_id = uuid.UUID(str(response.id))
 

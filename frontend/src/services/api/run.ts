@@ -84,6 +84,12 @@ const RENDERABLE_ERROR_KEYS: ReadonlySet<string> = new Set([
   'console.runs.errors.loadFailed',
   'console.runs.errors.cancelFailed',
   'console.runs.errors.dismiss',
+  // The plan gate's refusals.  plan-changed is a run sentence; the other three
+  // are shared with the plan-review surface, and the server names them there.
+  'console.runs.errors.planChanged',
+  'console.plans.notFound',
+  'console.plans.errors.invalidState',
+  'console.plans.errors.invalidContent',
 ])
 
 /** The three events that end a run, and therefore a subscription to it. */

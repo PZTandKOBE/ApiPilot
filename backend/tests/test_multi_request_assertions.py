@@ -27,6 +27,8 @@ from backend.schemas.run import RunCreateRequest
 from backend.services import agent_analyzer, agent_plan, run_executor, runs
 from backend.services.agent import derive_spec_identity, probe_document
 
+from tests.plan_support import persist_approved_plan
+
 pytestmark = pytest.mark.anyio
 
 ORDERS_DOCUMENT: dict[str, Any] = {
@@ -425,6 +427,13 @@ async def _create_run(fixtures, stack, monkeypatch) -> uuid.UUID:
             "variables": {},
             "baseUrl": BASE_URL,
         }
+    )
+
+    await persist_approved_plan(
+        fixtures.session,
+        project_id=stack["project"],
+        payload=payload,
+        project_public_id=public_id,
     )
 
     async def _do_not_schedule(run_id):

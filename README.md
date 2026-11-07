@@ -103,7 +103,8 @@ LLM 负责分析和生成候选计划；HTTP 请求执行、断言判断、运�
 - Agent 任务列表展示最近任务、任务状态和关联计划；分析结果通过五步分析审阅界面呈现。
 - 测试计划以 Scenario、Step、Assertion 组织。
 - 支持 `draft`、`in_review`、`approved`、`rejected` 等状态；未批准的计划不能进入正式 Run。
-- 支持计划批准/拒绝、计划名称/目标编辑、显式重新生成版本，以及删除计划；审批和名称/目标编辑状态当前由浏览器端维护。
+- 审批在服务端完成：`POST /api/projects/{project_id}/plans/{plan_id}/approve` 写入审批人、审批时间和计划内容指纹，`reject` 记录拒绝理由并撤销审批。Run 创建只读取数据库里的审批回执；浏览器 localStorage 仅作展示缓存，不能替代审批。
+- 支持计划名称/目标编辑（浏览器端展示层）、显式重新生成版本，以及删除计划；计划内容在服务端不可变，审批绑定的是内容指纹。
 - 重新生成会创建新的计划行（如 `plan_slug_v2`），旧计划和历史 Run 保持不变；当前版本由最高 version 派生。
 - 删除计划会停用该计划的全部版本，但保留历史 Run 和已生成报告，便于追溯。
 - 计划列表和详情显示 version、当前版本标记和关联 Run 数量。
@@ -544,7 +545,11 @@ npx vue-tsc -b --pretty false
 - Run 启动恢复没有 executor lease/heartbeat；`running` Run 在进程崩溃后的识别仍有缺口。
 - `schema` 断言尚未实现，执行时会跳过。
 - OpenAPI 规范导入当前按 JSON 解析，暂不支持 YAML；请先将 YAML 文档转换为 JSON。
-- 计划审批/拒绝和名称/目标编辑尚无独立 Plan Approval API；Run 创建会再次检查请求中携带的审批状态，但服务端 `plan.status` 不是独立的长期审批记录。刷新后计划内容以服务端版本为准，本地名称/目标编辑不持久化。
+- 计划审批已上移到服务端，但计划名称/目标编辑仍只存在于浏览器端展示层（服务端没有 plan 编辑接口）；刷新后名称/目标以服务端版本为准。审批绑定计划内容指纹：批准后若计划内容发生变化，Run 创建会返回 409 `plan-changed`，必须重新审批。
+- Run 创建时会把 method/path/body/body_present/produces/source 等执行配置完整复制进 `run_steps`；审批指纹校验与快照复制在同一事务内完成。Run 创建后修改或删除 Plan（含软删）不再影响已创建 Run 的执行。
+- 迁移前已经存在的历史 Run 一律标记 `snapshot_version=0`：`updated_at` 无法证明其执行内容从未被修改，迁移不做任何内容回填。执行器会在发出任何 HTTP 请求前以 `snapshot-unavailable` 失败并提示重新创建 Run；不会回退读取当前 Plan。
+- 审批与 Run 创建共用 `services/plan_structure.py` 的结构校验：空 Plan、空 scenario、没有 request step 的 scenario、非法 extract source、非法 assertion 绑定都会被 409 `plan-invalid` 拒绝；执行器对异常空树以 `empty-execution-tree` 失败，不会显示 passed。
+- Run 创建完成后，会从本次写入的 `run_scenarios`/`run_steps`/`run_assertions` 重建执行内容并与审批指纹比较；不一致时整笔事务回滚（`run-snapshot-mismatch`）。
 - Collections / Request History 仍只保存在浏览器 localStorage。
 - GitHub / Google OAuth 的真实 provider 端到端流程尚未在本次发布中手工验收；自动化测试验证了 state、PKCE、OIDC 声明校验、Cookie 和回调契约，provider 交换使用 mock。
 - official_cloud 游客限额是数据库计数上限，不是独立计费系统；游客会话创建本身仍建议由反向代理限速。

@@ -63,8 +63,10 @@ export interface PlanMetaEdit {
  * never disagree with the file it came from.
  *
  * Approval is the boundary this store exists to enforce. `analyzeSpec` and
- * `generatePlan` can only ever produce a `draft`; the only paths to `approved`
- * are the `approvePlan` action and the human dialog that calls it.
+ * `generatePlan` can only ever produce a `draft`; the only path to `approved`
+ * is the server's approve endpoint, called by `approvePlan`.  The persisted
+ * copy of a plan is a cache for rendering, never an authorisation: run creation
+ * asks the server, which checks the receipt it wrote itself.
  */
 export const useAgentStore = defineStore('agent', () => {
   const agent = createAgentService()
@@ -80,6 +82,15 @@ export const useAgentStore = defineStore('agent', () => {
     { parse: sanitizeStoredSpecs },
   )
 
+  /**
+   * This browser's copy of the plan list.
+   *
+   * Persisted so a reload can re-render without waiting for the network, but
+   * it is a cache and not an authority: approval status, approval actor and
+   * the timestamps are replaced by whatever the server returns in
+   * `loadPlans`.  Editing this value (or its localStorage cell) cannot make a
+   * plan runnable.
+   */
   const plans = usePersistedRef<readonly TestPlan[]>(STORAGE.plans, [], {
     parse: sanitizePlans,
   })
@@ -110,6 +121,17 @@ export const useAgentStore = defineStore('agent', () => {
   const plansLoading = ref(false)
   const plansError = ref<AgentError | null>(null)
   const deletingPlan = ref(false)
+
+  /**
+   * The approval request in flight, if any.
+   *
+   * One at a time: the approve/reject dialogs are modal and a second click
+   * while the first request is unanswered would send two transitions and have
+   * the later response overwrite the earlier one unpredictably.
+   */
+  const approvalPending = ref(false)
+  /** The last review refusal, for the dialog that produced it to render. */
+  const approvalError = ref<AgentError | null>(null)
   let plansInFlight: Promise<void> | null = null
   /** One best-effort audit recovery attempt per document per store lifetime. */
   let restoreAttemptedSpecId: string | null = null
@@ -244,6 +266,7 @@ export const useAgentStore = defineStore('agent', () => {
     analysisError.value = null
     planError.value = null
     plansError.value = null
+    approvalError.value = null
   }
 
   const toAgentError = (thrown: unknown, fallbackKey: string): AgentError =>
@@ -665,11 +688,13 @@ export const useAgentStore = defineStore('agent', () => {
   /**
    * Merge the server's plan versions into the local list.
    *
-   * The server owns plan content, version and currentness; this browser owns
-   * local approval decisions and local name/goal edits.  An existing local plan
-   * therefore keeps its approval fields and authored copy while taking the
-   * server's version metadata.  A server plan this browser has never seen is
-   * adopted as stored (normally `draft`).
+   * The server owns the plan: content, version, currentness, approval status
+   * and approval actor.  This browser owns only the reviewer's name/goal edits,
+   * which have no server-side write path yet.  An existing local plan therefore
+   * keeps its authored text while every status field is taken from the server —
+   * the local copy can be stale (another tab approved, the browser edited
+   * localStorage) and must never overwrite the authoritative answer.  A server
+   * plan this browser has never seen is adopted exactly as stored.
    */
   const loadPlans = async (): Promise<void> => {
     const project = projectId.value
@@ -696,12 +721,11 @@ export const useAgentStore = defineStore('agent', () => {
               ? incoming
               : {
                   ...incoming,
+                  // Local-only copy; the server has no rename endpoint yet.
                   name: local.name,
                   goal: local.goal,
-                  status: local.status,
-                  approvedAt: local.approvedAt,
-                  rejectedAt: local.rejectedAt,
-                  rejectionReason: local.rejectionReason,
+                  // status / approvedAt / rejectedAt / rejectionReason /
+                  // approvedBy deliberately stay as incoming supplied them.
                 },
           )
         }
@@ -777,6 +801,13 @@ export const useAgentStore = defineStore('agent', () => {
 
   /* --- Approval boundary -------------------------------------------- */
 
+  /**
+   * Mark a plan as put in front of a reviewer.
+   *
+   * Presentation only: the server has no "start review" transition, and this
+   * value is replaced by the server's status as soon as a review request or a
+   * `loadPlans` answers.  It therefore cannot authorise anything.
+   */
   const startReview = (id: string): void => {
     plans.value = plans.value.map((plan) =>
       plan.id === id && plan.status === 'draft'
@@ -785,38 +816,107 @@ export const useAgentStore = defineStore('agent', () => {
     )
   }
 
-  const approvePlan = (id: string): void => {
-    plans.value = plans.value.map((plan) =>
-      plan.id === id
-        ? {
-            ...plan,
-            status: 'approved',
-            approvedAt: new Date().toISOString(),
-            rejectedAt: null,
-            rejectionReason: null,
-          }
-        : plan,
+  /**
+   * Make the server's copy of a plan the local one.
+   *
+   * Everything the server returned replaces the local plan; only the
+   * reviewer's locally authored name/goal survive, because there is no
+   * server-side write path for them and approving must not discard edits the
+   * user just made.  In particular status, approvedAt, rejectedAt,
+   * rejectionReason and approvedBy come from the response — nothing here
+   * decides them.
+   */
+  const applyServerPlan = (server: TestPlan): void => {
+    const local = plans.value.find((plan) => plan.id === server.id)
+
+    adoptPlan(
+      local === undefined
+        ? server
+        : { ...server, name: local.name, goal: local.goal },
     )
   }
 
+  /** The plan a review action names, or a refusal the dialog can render. */
+  const reviewTarget = (id: string): TestPlan | null => {
+    const target = plans.value.find((plan) => plan.id === id)
+
+    if (target === undefined) {
+      approvalError.value = {
+        code: 'plan-not-found',
+        messageKey: 'console.plans.notFound',
+        params: { planId: id },
+      }
+
+      return null
+    }
+
+    return target
+  }
+
+  /**
+   * Approve a plan on the server.
+   *
+   * This is the only path to `approved`.  The returned plan is the server's
+   * receipt, so the local copy shows the same status, timestamp and
+   * `approvedBy` a fresh `loadPlans` would.  A refusal sets
+   * `approvalError` and returns false; the dialog stays open and renders it.
+   */
+  const approvePlan = async (id: string): Promise<boolean> => {
+    if (approvalPending.value) return false
+
+    const target = reviewTarget(id)
+    if (target === null) return false
+
+    approvalPending.value = true
+    approvalError.value = null
+
+    try {
+      const approved = await agent.approvePlan(target.projectId, id)
+      applyServerPlan(approved)
+
+      return true
+    } catch (thrown) {
+      approvalError.value = toAgentError(thrown, 'console.plans.approveFailed')
+
+      return false
+    } finally {
+      approvalPending.value = false
+    }
+  }
+
   /** A rejection without a reason is refused: the agent needs to know why. */
-  const rejectPlan = (id: string, reason: string): boolean => {
+  const rejectPlan = async (id: string, reason: string): Promise<boolean> => {
+    if (approvalPending.value) return false
+
     const trimmed = reason.trim()
-    if (trimmed === '') return false
 
-    plans.value = plans.value.map((plan) =>
-      plan.id === id
-        ? {
-            ...plan,
-            status: 'rejected',
-            rejectedAt: new Date().toISOString(),
-            approvedAt: null,
-            rejectionReason: trimmed,
-          }
-        : plan,
-    )
+    if (trimmed === '') {
+      approvalError.value = {
+        code: 'plan-invalid',
+        messageKey: 'console.aiTest.approval.reasonRequired',
+      }
 
-    return true
+      return false
+    }
+
+    const target = reviewTarget(id)
+    if (target === null) return false
+
+    approvalPending.value = true
+    approvalError.value = null
+
+    try {
+      const rejected = await agent.rejectPlan(target.projectId, id, trimmed)
+      applyServerPlan(rejected)
+
+      return true
+    } catch (thrown) {
+      approvalError.value = toAgentError(thrown, 'console.plans.rejectFailed')
+
+      return false
+    } finally {
+      approvalPending.value = false
+    }
   }
 
   /** Renaming stores the reviewer's own words, not a dictionary key. */
@@ -967,6 +1067,8 @@ export const useAgentStore = defineStore('agent', () => {
     plansLoading,
     plansError,
     deletingPlan,
+    approvalPending,
+    approvalError,
     pendingHandoff,
     tasksLoading,
     tasksError,

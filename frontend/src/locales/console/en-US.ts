@@ -675,6 +675,12 @@ export const consoleEnUS = {
     deleteConfirm: 'Delete plan',
     deleteFailed: 'The plan could not be deleted. Please try again.',
     deleted: 'Test plan deleted.',
+    approveFailed: 'The plan could not be approved. Please try again.',
+    rejectFailed: 'The plan could not be rejected. Please try again.',
+    errors: {
+      invalidState: 'The plan’s current state does not allow this operation.',
+      invalidContent: 'The plan’s content cannot be executed. Regenerate it.',
+    },
   },
   runs: {
     title: 'Test Runs',
@@ -743,6 +749,7 @@ export const consoleEnUS = {
         'Your guest session has expired. A new one has been started — please try again.',
       notFound: 'No run with that id was found.',
       notApproved: '“{plan}” has to be approved before it can run.',
+      planChanged: 'The plan changed after it was approved. Approve it again before running.',
       noPlan: 'There is no approved plan to run yet.',
       createFailed: 'The run could not be created.',
       loadFailed: 'The run could not be loaded.',
@@ -760,6 +767,7 @@ export const consoleEnUS = {
     failure: {
       heading: 'Failure',
       notExecutable: 'This step names no endpoint, so there is nothing to call.',
+      emptyExecutionTree: 'This run has no executable request steps, so it cannot pass.',
     },
   },
 

@@ -58,6 +58,8 @@ import {
 const ANALYZE_FAILED = 'console.aiTest.errors.analyzeFailed'
 const GENERATE_FAILED = 'console.aiTest.errors.generateFailed'
 const LOAD_FAILED = 'console.aiTest.errors.loadFailed'
+const APPROVE_FAILED = 'console.plans.approveFailed'
+const REJECT_FAILED = 'console.plans.rejectFailed'
 
 /**
  * The message keys this console can actually render.
@@ -78,6 +80,13 @@ const RENDERABLE_ERROR_KEYS: ReadonlySet<string> = new Set([
   'console.aiTest.errors.loadFailed',
   'console.aiTest.errors.projectNotReady',
   'console.aiTest.errors.dismiss',
+  // The review endpoints' refusals.  plan-not-found is named by the shared
+  // plans dictionary, the other two by the plan-review namespace.
+  'console.plans.notFound',
+  'console.plans.errors.invalidState',
+  'console.plans.errors.invalidContent',
+  'console.plans.approveFailed',
+  'console.plans.rejectFailed',
 ])
 
 /**
@@ -212,6 +221,23 @@ const taskAuditPath = (taskId: string): string =>
 const projectPlansPath = (projectId: string): string =>
   '/api/projects/' + encodeURIComponent(projectId) + '/plans'
 
+/**
+ * One review action on a plan.
+ *
+ * Both endpoints answer with the same AgentPlanResponse as the list, so the
+ * caller adopts the server's copy instead of applying the transition locally.
+ */
+const planReviewPath = (
+  projectId: string,
+  planId: string,
+  action: 'approve' | 'reject',
+): string =>
+  projectPlansPath(projectId) +
+  '/' +
+  encodeURIComponent(planId) +
+  '/' +
+  action
+
 const toTaskResult = (body: AgentTaskWireResponse): AgentTaskResult => {
   const status = asTaskStatus(body?.status)
 
@@ -320,5 +346,36 @@ export const createHttpAgentService = (): AgentService => ({
         { method: 'DELETE' },
       )
     }, 'generate-failed', GENERATE_FAILED)
+  },
+
+  async approvePlan(projectId: string, planId: string) {
+    return guarded(async () => {
+      const body = await request<unknown>(planReviewPath(projectId, planId, 'approve'), {
+        method: 'POST',
+      })
+
+      if (!planIsRenderable(body)) {
+        throw new AgentServiceError({ code: 'generate-failed', messageKey: APPROVE_FAILED })
+      }
+
+      return body
+    }, 'generate-failed', APPROVE_FAILED)
+  },
+
+  async rejectPlan(projectId: string, planId: string, reason: string) {
+    return guarded(async () => {
+      const body = await request<unknown>(planReviewPath(projectId, planId, 'reject'), {
+        method: 'POST',
+        // The backend refuses a blank reason; the trimmed sentence is what it
+        // stores, so there is no reason to send the surrounding whitespace.
+        body: { reason: reason.trim() },
+      })
+
+      if (!planIsRenderable(body)) {
+        throw new AgentServiceError({ code: 'generate-failed', messageKey: REJECT_FAILED })
+      }
+
+      return body
+    }, 'generate-failed', REJECT_FAILED)
   },
 })

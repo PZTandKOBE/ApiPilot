@@ -693,6 +693,18 @@ export interface ConsoleMessageSchema {
     readonly deleteConfirm: string
     readonly deleteFailed: string
     readonly deleted: string
+
+    /** Review actions: submitting a decision to the server. */
+    readonly approveFailed: string
+    readonly rejectFailed: string
+
+    /** Refusals of a review action, named by code rather than by HTTP status. */
+    readonly errors: {
+      /** 409 invalid-plan-state: the current status does not allow the action. */
+      readonly invalidState: string
+      /** 409 plan-invalid: the stored plan content cannot be executed. */
+      readonly invalidContent: string
+    }
   }
 
   /**
@@ -766,6 +778,11 @@ export interface ConsoleMessageSchema {
       /** The run's plan `{plan}` has to be approved before it can run. */
       readonly unauthorized: string
     readonly notApproved: string
+      /**
+       * 409 plan-changed: the stored plan no longer matches its approval
+       * receipt, so it must be reviewed (and approved) again.
+       */
+      readonly planChanged: string
       readonly noPlan: string
       readonly createFailed: string
       readonly loadFailed: string
@@ -792,6 +809,8 @@ export interface ConsoleMessageSchema {
       readonly heading: string
       /** A request step that names no endpoint cannot be executed. */
       readonly notExecutable: string
+      /** The run snapshot contains no request step to execute. */
+      readonly emptyExecutionTree: string
     }
   }
 

@@ -436,6 +436,86 @@ describe('deletePlan', () => {
   })
 })
 
+describe('approvePlan', () => {
+  it('posts to the review path with no body and returns the server plan', async () => {
+    respond = (recorded, response) => {
+      expect(recorded.method).toBe('POST')
+      expect(recorded.url).toBe(
+        '/api/projects/' + PROJECT + '/plans/' + plan.id + '/approve',
+      )
+      // The endpoint takes no body; sending one would be inventing a contract.
+      expect(recorded.body).toBeUndefined()
+      json(response, 200, {
+        ...plan,
+        status: 'approved',
+        approvedAt: '2026-10-07T10:00:01Z',
+        approvedBy: 'guest',
+      })
+    }
+
+    const approved = await service.approvePlan(PROJECT, plan.id)
+
+    expect(approved.status).toBe('approved')
+    expect(approved.approvedAt).toBe('2026-10-07T10:00:01Z')
+    expect(approved.approvedBy).toBe('guest')
+  })
+
+  it('maps a missing plan to the shared plan sentence', async () => {
+    respond = (_recorded, response) => {
+      json(response, 404, { code: 'plan-not-found', messageKey: 'console.plans.notFound' })
+    }
+
+    await expect(service.approvePlan(PROJECT, plan.id)).rejects.toMatchObject({
+      detail: { code: 'plan-not-found', messageKey: 'console.plans.notFound' },
+    })
+  })
+})
+
+describe('rejectPlan', () => {
+  it('posts the trimmed reason to the reject path', async () => {
+    respond = (recorded, response) => {
+      expect(recorded.method).toBe('POST')
+      expect(recorded.url).toBe(
+        '/api/projects/' + PROJECT + '/plans/' + plan.id + '/reject',
+      )
+      expect(recorded.body).toEqual({ reason: 'Missing the refund path.' })
+      json(response, 200, {
+        ...plan,
+        status: 'rejected',
+        rejectedAt: '2026-10-07T10:00:01Z',
+        rejectionReason: 'Missing the refund path.',
+        approvedBy: null,
+      })
+    }
+
+    const rejected = await service.rejectPlan(
+      PROJECT,
+      plan.id,
+      '  Missing the refund path.  ',
+    )
+
+    expect(rejected.status).toBe('rejected')
+    expect(rejected.rejectionReason).toBe('Missing the refund path.')
+    expect(rejected.approvedBy).toBeNull()
+  })
+
+  it('maps an invalid transition to the plan-review sentence', async () => {
+    respond = (_recorded, response) => {
+      json(response, 409, {
+        code: 'invalid-plan-state',
+        messageKey: 'console.plans.errors.invalidState',
+      })
+    }
+
+    await expect(service.rejectPlan(PROJECT, plan.id, 'No.')).rejects.toMatchObject({
+      detail: {
+        code: 'invalid-plan-state',
+        messageKey: 'console.plans.errors.invalidState',
+      },
+    })
+  })
+})
+
 describe('getTask', () => {
   it('reads a task back by its id', async () => {
     respond = (_recorded, response) => {

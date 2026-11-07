@@ -124,10 +124,10 @@ describe('plan list', () => {
     agent.startReview(planId)
     expect(has(await render(TestPlansView), 'In review')).toBe(true)
 
-    agent.rejectPlan(planId, 'Not enough coverage.')
+    expect(await agent.rejectPlan(planId, 'Not enough coverage.')).toBe(true)
     expect(has(await render(TestPlansView), 'Rejected')).toBe(true)
 
-    agent.approvePlan(planId)
+    expect(await agent.approvePlan(planId)).toBe(true)
     const approved = await render(TestPlansView)
     expect(has(approved, 'Approved')).toBe(true)
     expect(has(approved, 'Approved')).toBe(true)
@@ -306,7 +306,7 @@ describe('plan detail', () => {
   it('keeps the plan visible after its metadata is edited', async () => {
     const agent = await withPlan()
     const planId = agent.activePlan?.id ?? ''
-    agent.approvePlan(planId)
+    await agent.approvePlan(planId)
     agent.updatePlanMeta(planId, { name: 'Checkout regression', goal: 'Cover the paid path.' })
 
     const html = await render(

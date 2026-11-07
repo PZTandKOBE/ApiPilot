@@ -30,6 +30,16 @@ export const AGENT_ERROR_CODES = [
   /** The validator refused the plan the pipeline produced. */
   'plan-invalid',
   /**
+   * The review endpoints' refusals.
+   *
+   * `plan-not-found` is a 404 for a plan that does not exist (or was deleted);
+   * `invalid-plan-state` is a 409 for a state transition the server does not
+   * allow.  Both arrive from `POST /plans/{id}/approve|reject` and are codes
+   * of their own so the console can say what actually happened.
+   */
+  'plan-not-found',
+  'invalid-plan-state',
+  /**
    * The store refused before it asked the server anything.
    *
    * Every other code here is an answer from the agent service.  This one is the

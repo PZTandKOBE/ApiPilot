@@ -8,6 +8,8 @@ own id.**
 * `GET  /api/projects/{project_id}/agent/tasks` -- read recent task activity.
 * `POST /api/projects/{project_id}/agent/tasks` -- ask the agent for a plan.
 * `GET  /api/projects/{project_id}/plans`     -- read every plan version.
+* `POST /api/projects/{project_id}/plans/{plan_id}/approve` -- approve a plan.
+* `POST /api/projects/{project_id}/plans/{plan_id}/reject`  -- send it back.
 * `DELETE /api/projects/{project_id}/plans/{plan_id}` -- retire a plan series.
 * `GET  /api/agent/tasks/{task_id}`          -- read the task and its plan.
 
@@ -38,6 +40,7 @@ from backend.api.errors import ERROR_RESPONSES
 from backend.schemas.agent import (
     AgentPlanResponse,
     AgentTaskCreateRequest,
+    PlanRejectRequest,
     AgentTaskResponse,
     AgentTaskSummaryResponse,
 )
@@ -115,6 +118,72 @@ async def list_project_plans(
     )
 
     return await agent.list_plans(session, project_id=project_id)
+
+
+
+@router.post(
+    "/projects/{project_id}/plans/{plan_id}/approve",
+    response_model=AgentPlanResponse,
+    summary="Approve a test plan on the server",
+    responses=ERROR_RESPONSES,
+)
+async def approve_project_plan(
+    project_id: ProjectId,
+    plan_id: PlanId,
+    session: SessionDep,
+    guest: CurrentGuestSessionDep,
+) -> AgentPlanResponse:
+    """Record an approval receipt for this plan's current content.
+
+    The receipt is the database row: actor, moment and content fingerprint are
+    written together under a row lock.  Approving is the only way a plan stops
+    being a draft, and run creation reads this row rather than the request body.
+    A repeated approve is idempotent while the content is unchanged.
+    """
+    project = await guest_access.require_guest_project_access(
+        session, project_public_id=project_id, guest=guest
+    )
+
+    response = await agent.approve_plan(
+        session, project=project, plan_id=plan_id, guest=guest
+    )
+    await session.commit()
+
+    return response
+
+
+@router.post(
+    "/projects/{project_id}/plans/{plan_id}/reject",
+    response_model=AgentPlanResponse,
+    summary="Reject a test plan and record the reason",
+    responses=ERROR_RESPONSES,
+)
+async def reject_project_plan(
+    project_id: ProjectId,
+    plan_id: PlanId,
+    payload: PlanRejectRequest,
+    session: SessionDep,
+    guest: CurrentGuestSessionDep,
+) -> AgentPlanResponse:
+    """Revoke any approval on this plan and store the reviewer's reason.
+
+    Rejecting an approved plan clears its approval credential in the same
+    transaction, so a run created after this call cannot execute it.
+    """
+    project = await guest_access.require_guest_project_access(
+        session, project_public_id=project_id, guest=guest
+    )
+
+    response = await agent.reject_plan(
+        session,
+        project=project,
+        plan_id=plan_id,
+        guest=guest,
+        reason=payload.reason,
+    )
+    await session.commit()
+
+    return response
 
 
 @router.delete(

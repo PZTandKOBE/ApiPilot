@@ -25,6 +25,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    CheckConstraint,
     DateTime,
     ForeignKey,
     Integer,
@@ -171,6 +172,31 @@ class TestPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __tablename__ = "test_plans"
     __table_args__ = (
         UniqueConstraint("project_id", "public_id", name="uq_test_plans_project_public_id"),
+        # An approval is a receipt: it names one actor, one content fingerprint
+        # and one moment.  These four checks are the database's half of the
+        # contract; the service is the only writer that satisfies them.
+        CheckConstraint(
+            "approved_by_guest_session_id IS NULL OR approved_by_user_id IS NULL",
+            name="approval_actor_exclusive",
+        ),
+        CheckConstraint(
+            "status <> 'approved' OR approved_by_guest_session_id IS NOT NULL "
+            "OR approved_by_user_id IS NOT NULL",
+            name="approval_actor_required",
+        ),
+        CheckConstraint(
+            "status <> 'approved' OR content_hash IS NOT NULL",
+            name="approval_hash_required",
+        ),
+        CheckConstraint(
+            "content_hash IS NULL OR char_length(content_hash) = 64",
+            name="approval_hash_length",
+        ),
+        CheckConstraint(
+            "status <> 'rejected' OR (approved_at IS NULL AND content_hash IS NULL "
+            "AND approved_by_guest_session_id IS NULL AND approved_by_user_id IS NULL)",
+            name="rejection_clears_approval",
+        ),
     )
 
     agent_task_id: Mapped[uuid.UUID | None] = mapped_column(
@@ -213,6 +239,22 @@ class TestPlan(UUIDPrimaryKeyMixin, TimestampMixin, Base):
         DateTime(timezone=True), nullable=True
     )
     rejection_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # The approval receipt.  `content_hash` fingerprints the execution-relevant
+    # content of this plan (see services/plan_hash.py); the actor is exactly one
+    # of the two columns, never both, and is NULL until a human approves.
+    approved_by_guest_session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("guest_sessions.id", ondelete="NO ACTION"),
+        nullable=True,
+        index=True,
+    )
+    approved_by_user_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="NO ACTION"),
+        nullable=True,
+        index=True,
+    )
+    content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     deleted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )

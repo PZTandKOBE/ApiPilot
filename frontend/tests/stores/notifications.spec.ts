@@ -118,7 +118,7 @@ describe('real notification projection', () => {
     await ui.loadNotifications()
     expect(ui.notifications.some((item) => item.id.startsWith('plan:'))).toBe(true)
 
-    agent.approvePlan(plan!.id)
+    await agent.approvePlan(plan!.id)
     await ui.loadNotifications()
 
     expect(ui.notifications.some((item) => item.id.startsWith('plan:'))).toBe(false)

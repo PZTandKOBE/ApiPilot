@@ -183,8 +183,9 @@ export interface AgentService {
    * Every live plan version in a project, read from the server.
    *
    * The plan list is server-backed so version history survives a reload and a
-   * different browser; the local store still owns this browser's approval
-   * choices and merges them over the server's draft state.
+   * different browser.  Approval state is server-owned too: the returned
+   * `status`, timestamps and `approvedBy` are authoritative, and the local
+   * store only keeps its own name/goal edits over them.
    */
   listPlans(projectId: string): Promise<readonly TestPlan[]>
 
@@ -196,6 +197,25 @@ export interface AgentService {
    * local versions once this resolves.
    */
   deletePlan(projectId: string, planId: string): Promise<void>
+
+  /**
+   * Record a server-side approval of this plan's current content.
+   *
+   * This is the only way a plan becomes approved: run creation reads the
+   * server's receipt, not a status string in the request body, so editing
+   * local state (or `localStorage`) can never authorise execution.  The
+   * response is the plan as stored, including `approvedBy`.
+   */
+  approvePlan(projectId: string, planId: string): Promise<TestPlan>
+
+  /**
+   * Send a plan back with the reviewer's reason.
+   *
+   * The reason is required by the server (1..1000 characters after trimming),
+   * and rejecting clears any approval receipt.  The response is the plan as
+   * stored, with `approvedBy` null.
+   */
+  rejectPlan(projectId: string, planId: string, reason: string): Promise<TestPlan>
 }
 
 /** Which implementation the console gets. */

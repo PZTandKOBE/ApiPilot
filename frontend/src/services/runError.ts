@@ -17,6 +17,19 @@ export const RUN_ERROR_CODES = [
   'not-approved',
   'cancel-failed',
   'stream-failed',
+  /**
+   * The plan gate's refusals, as the create endpoint now names them.
+   *
+   * A run is created against the *stored* plan, so the server can refuse with
+   * a missing plan (404), a status transition it does not allow (409), content
+   * that cannot be executed (409), or a stored approval receipt that no longer
+   * matches the plan's content (409).  Each is a distinct sentence for the
+   * user, so each is a code of its own instead of folding into create-failed.
+   */
+  'plan-changed',
+  'plan-not-found',
+  'invalid-plan-state',
+  'plan-invalid',
 ] as const
 
 export type RunErrorCode = (typeof RUN_ERROR_CODES)[number]

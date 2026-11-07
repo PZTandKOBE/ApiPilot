@@ -254,22 +254,19 @@ def test_disable_flag_did_not_leak_into_the_process() -> None:
 # --------------------------------------------------------------------------- #
 
 
-async def test_t3_young_queued_run_is_rescheduled_and_finishes_without_http(
+async def test_t3_young_queued_run_is_rescheduled_and_fails_on_empty_tree(
     fixtures, stack, read_session, monkeypatch
 ) -> None:
-    """A queued run inside the window is handed to the executor, and runs to the end.
+    """A queued run inside the window is handed to the executor, then fails safely.
 
-    The run has no scenarios on purpose.  ``_load_tree`` returns an empty list, so
-    the executor commits ``run.started``, skips the scenario loop entirely and commits
-    ``run.completed``.
+    The run has no scenarios on purpose.  ``_load_tree`` returns an empty list and
+    the new guard fails it with empty-execution-tree before ``run.started``, before
+    the environment is loaded and before the HTTP client is constructed.  An empty
+    run must never be recorded as passed.
 
-    Note what the empty tree does *not* do: the ``httpx.AsyncClient`` at
-    ``run_executor.py:1491`` is still constructed, because it is opened before the
-    loop, not inside it.  The client is therefore built and left unused -- and that is
-    exactly the claim under test: "no request is sent".   The client is replaced here
-    by one whose ``send`` raises, so a future refactor that starts a request fails
-    this test instead of reaching the network, and the count of constructions is
-    asserted so the run cannot pass by never reaching that line at all.
+    The client is still replaced by one whose ``send`` raises so a future refactor
+    that starts a request fails this test instead of reaching the network; it is
+    also asserted that no client is constructed at all.
     """
     run_id = await fixtures.run(stack)  # queued, started_at NULL, no run.started
     await fixtures.commit()
@@ -335,23 +332,25 @@ async def test_t3_young_queued_run_is_rescheduled_and_finishes_without_http(
 
         # 4. Final state and event stream, read through a fresh session.
         finished = await fixtures.reload(read_session, run_id)
-        if finished.status != "passed":
-            raise AssertionError(f"expected the empty run to pass, got {finished.status!r}")
-        if finished.started_at is None or finished.finished_at is None:
-            raise AssertionError("a finished run carries both timestamps")
-        if finished.finished_at < finished.started_at:
-            raise AssertionError("finished_at precedes started_at")
-        if finished.error_code is not None:
-            raise AssertionError(f"a passed run has no error code: {finished.error_code!r}")
+        if finished.status != "failed":
+            raise AssertionError(f"expected the empty run to fail, got {finished.status!r}")
+        if finished.started_at is not None:
+            raise AssertionError("the guard must fail the run before run.started")
+        if finished.finished_at is None:
+            raise AssertionError("a failed run carries finished_at")
+        if finished.error_code != run_executor.EMPTY_EXECUTION_TREE:
+            raise AssertionError(
+                f"expected {run_executor.EMPTY_EXECUTION_TREE!r}, got {finished.error_code!r}"
+            )
 
         events = await fixtures.events(read_session, run_id)
         types = [event.event_type for event in events]
-        if types != ["run.started", "run.completed"]:
-            raise AssertionError(f"expected run.started then run.completed, got {types}")
-        if [event.seq for event in events] != [1, 2]:
+        if types != ["run.failed"]:
+            raise AssertionError(f"expected run.failed only, got {types}")
+        if [event.seq for event in events] != [1]:
             raise AssertionError(f"seq must be dense from 1, got {[e.seq for e in events]}")
-        if "run.failed" in types:
-            raise AssertionError("a rescheduled run must not end in run.failed")
+        if "run.completed" in types:
+            raise AssertionError("an empty run must not record run.completed")
 
         frozen = {
             "run.started",
@@ -368,18 +367,17 @@ async def test_t3_young_queued_run_is_rescheduled_and_finishes_without_http(
             raise AssertionError(f"events outside the frozen contract: {unknown}")
 
         # 5. The run row and the stream have to agree with each other.
-        if events[0].payload.get("startedAt") is None:
-            raise AssertionError("run.started carries no startedAt")
-        completed_at = events[1].payload.get("finishedAt")
-        if completed_at is None:
-            raise AssertionError("run.completed carries no finishedAt")
-        if events[1].payload.get("durationMs") is None:
-            raise AssertionError("run.completed carries no durationMs")
+        failed_at = events[0].payload.get("finishedAt")
+        if failed_at is None:
+            raise AssertionError("run.failed carries no finishedAt")
+        if events[0].payload.get("failure") is None:
+            raise AssertionError("run.failed carries no failure")
+        if events[0].payload.get("durationMs") is None:
+            raise AssertionError("run.failed carries no durationMs")
 
-        # 6. The client was built (so the executor really reached :1491) and used
-        #    zero times.
-        if len(built) != 1:
-            raise AssertionError(f"expected exactly one client for this run, got {len(built)}")
+        # 6. The guard runs before any client is constructed and before any send.
+        if built:
+            raise AssertionError(f"the guard constructed {len(built)} HTTP client(s)")
 
         # 7. The registry the executor maintains must have released this run.
         if run_id in run_executor._RUNNING_TASKS:
