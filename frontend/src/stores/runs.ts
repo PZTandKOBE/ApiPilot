@@ -5,6 +5,7 @@ import { useLocalizedText } from '@/composables/useLocalizedText'
 import {
   createRunService,
   isRunServiceError,
+  toRunPlanPayload,
   type CreateRunInput,
   type RunError,
   type RunRequestOptions,
@@ -279,8 +280,9 @@ export const useRunsStore = defineStore('runs', () => {
     const input: CreateRunInput = {
       projectId: projectId.value,
       planId: plan.id,
-      // Whole, not by reference: the backend has never seen this plan.
-      plan,
+      // Request DTO, not the approval response: approvedBy is server-owned
+      // receipt metadata and must not leak into the Run API PlanPayload.
+      plan: toRunPlanPayload(plan),
       specId: spec.id,
       // The document itself. Metadata alone could not be turned into requests.
       specDocument: document,

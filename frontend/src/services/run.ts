@@ -16,7 +16,14 @@
  * written against it rather than against a promise that resolves an array.
  */
 
-import type { TestPlan } from '@/types/agent'
+import type {
+  ApprovalStatus,
+  LocalizedText,
+  PlanSource,
+  RiskLevel,
+  TestPlan,
+  TestScenario,
+} from '@/types/agent'
 import type { RunDetail, RunEvent, TestRun } from '@/types/run'
 import { createHttpRunService } from './api/run'
 import { createMockRunService } from './mock/run'
@@ -50,10 +57,64 @@ export { RunServiceError, isRunServiceError } from './runError'
  * dialog is a UI boundary; editing local state (or `localStorage`) cannot make
  * a plan runnable.
  */
+/**
+ * The Plan shape accepted by the Run API.
+ *
+ * Deliberately not TestPlan: TestPlan is the read/approval response and also
+ * carries approvedBy, which is server-owned receipt metadata.  The Run request
+ * speaks PlanPayload and must never echo that response-only field.  Listing the
+ * fields explicitly means a future response field cannot leak into the request
+ * just because it was added to TestPlan.
+ */
+export interface RunPlanPayload {
+  readonly id: string
+  readonly projectId: string
+  readonly specId: string
+  readonly name: LocalizedText
+  readonly goal: LocalizedText
+  readonly riskLevel: RiskLevel
+  readonly status: ApprovalStatus
+  readonly scenarios: readonly TestScenario[]
+  readonly source: PlanSource
+  readonly generatedAt: string
+  readonly approvedAt: string | null
+  readonly rejectedAt: string | null
+  readonly rejectionReason: string | null
+  readonly version?: number
+  readonly isCurrent?: boolean
+  readonly runCount?: number
+}
+
+/**
+ * Project a read/approval TestPlan onto the Run request contract.
+ *
+ * approvedBy is intentionally omitted: it describes the server's approval
+ * receipt and is not part of PlanPayload.  The original object is not mutated,
+ * so the review UI keeps its approval actor after a run starts.
+ */
+export const toRunPlanPayload = (plan: TestPlan): RunPlanPayload => ({
+  id: plan.id,
+  projectId: plan.projectId,
+  specId: plan.specId,
+  name: plan.name,
+  goal: plan.goal,
+  riskLevel: plan.riskLevel,
+  status: plan.status,
+  scenarios: plan.scenarios,
+  source: plan.source,
+  generatedAt: plan.generatedAt,
+  approvedAt: plan.approvedAt,
+  rejectedAt: plan.rejectedAt,
+  rejectionReason: plan.rejectionReason,
+  ...(plan.version === undefined ? {} : { version: plan.version }),
+  ...(plan.isCurrent === undefined ? {} : { isCurrent: plan.isCurrent }),
+  ...(plan.runCount === undefined ? {} : { runCount: plan.runCount }),
+})
+
 export interface CreateRunInput {
   readonly projectId: string
   readonly planId: string
-  readonly plan: TestPlan
+  readonly plan: RunPlanPayload
   readonly specId: string
   /** The OpenAPI document's original text, as stored. */
   readonly specDocument: string

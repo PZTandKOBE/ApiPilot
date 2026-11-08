@@ -3,13 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createHttpRunService } from '@/services/api/run'
 import { apiBaseUrl } from '@/services/http'
-import type { CreateRunInput } from '@/services/run'
+import { toRunPlanPayload, type CreateRunInput } from '@/services/run'
 import { RunServiceError } from '@/services/runError'
 import { useAgentStore } from '@/stores/agent'
 import { useProjectStore } from '@/stores/project'
 import { useRunsStore } from '@/stores/runs'
 
 import { installProjectFixtures } from '../support/projects'
+import type { TestPlan } from '@/types/agent'
 import type { RunEvent } from '@/types/run'
 
 /**
@@ -228,6 +229,41 @@ describe('the run service, over HTTP', () => {
     // The value goes out; it does not come back.
     expect(run.variableKeys).toEqual(['token'])
     expect('variables' in run).toBe(false)
+  })
+
+  it('strips approvedBy from the Run plan and preserves every other request field', async () => {
+    respondWith(runBody, 201)
+    const service = createHttpRunService()
+    const plan = {
+      ...createInput().plan,
+      approvedBy: 'account' as const,
+    } satisfies TestPlan
+    const input: CreateRunInput = {
+      ...createInput(),
+      plan: toRunPlanPayload(plan),
+    }
+
+    await service.createRun(input)
+
+    const body = bodyOf(captured())
+    const sentPlan = body.plan as Record<string, unknown>
+
+    expect(sentPlan).not.toHaveProperty('approvedBy')
+    expect(sentPlan.id).toBe('plan_orders_1a2b')
+    expect(sentPlan.projectId).toBe('prj_orders')
+    expect(sentPlan.specId).toBe('spec_orders_api_1a2b')
+    expect(sentPlan.status).toBe('approved')
+
+    expect(body).toMatchObject({
+      projectId: 'prj_orders',
+      planId: 'plan_orders_1a2b',
+      specId: 'spec_orders_api_1a2b',
+      specDocument: '{"openapi":"3.0.3"}',
+      environmentId: 'env_orders_staging',
+      baseUrl: 'https://api.stg.example.com',
+      variables: { token: 's3cr3t-value' },
+    })
+    expect(plan.approvedBy).toBe('account')
   })
 
   it('reads a project\'s runs from its own collection', async () => {
